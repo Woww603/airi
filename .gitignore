@@ -44,6 +44,8 @@ coverage/
 # Build
 out/
 bundle/
+scripts/airi-discord-launcher-app/*.app
+scripts/airi-discord-dashboard-window/*.app
 .flatpak-builder/
 .flatpak-repo/
 *.flatpak
@@ -65,6 +67,7 @@ components.d.ts
 
 # Cache
 .eslintcache
+.pnpm-store/
 **/.cache/
 **/.vitepress/cache/
 **/*.tsbuildinfo
@@ -109,6 +112,8 @@ web-ext.config.ts
 # Data
 .postgres
 twitter-session.json
+services/discord-bot/.airi-discord-memory.json
+services/discord-bot/.airi-discord-dashboard-state.json
 
 # Symlinks created by nix build
 result*
