@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RemovableRef } from '@vueuse/core'
 
+import { errorMessageFrom } from '@moeru/std'
 import {
   ProviderAdvancedSettings,
   ProviderBaseUrlInput,
@@ -110,7 +111,7 @@ async function refetch() {
   }
   catch (error) {
     validationMessage.value = t('settings.dialogs.onboarding.validationError', {
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessageFrom(error) ?? String(error),
     })
   }
 }

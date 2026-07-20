@@ -166,7 +166,10 @@ export function capVitePlugin(options: CapVitePluginOptions): Plugin {
           }
         }
         catch (error) {
-          logger.error(`[cap-vite] ${error instanceof Error ? error.message : String(error)}`)
+          let message = String(error)
+          if (error instanceof Error)
+            message = error.message
+          logger.error(`[cap-vite] ${message}`)
           await shutdown()
         }
         finally {

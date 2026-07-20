@@ -50,7 +50,7 @@ export const desktopDescriptors: ToolDescriptor[] = [
   {
     canonicalName: 'desktop_observe',
     displayName: 'Desktop Observe',
-    summary: 'Capture unified desktop observation: screenshot + window list + AX tree + Chrome semantics (when Chrome is foreground). Returns ranked interactable target candidates with ids, bounds, and source labels.',
+    summary: 'Capture unified desktop observation: screenshot + window list + AX tree + best-effort Chrome semantics when browser surfaces are available. Returns ranked interactable target candidates with ids, bounds, and source labels.',
     lane: 'desktop',
     kind: 'read',
     readOnly: true,

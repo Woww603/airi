@@ -20,6 +20,7 @@ import type { ComputerUseServerRuntime } from './runtime'
 
 import process from 'node:process'
 
+import { errorMessageFrom } from '@moeru/std'
 import { z } from 'zod'
 
 import { captureDesktopGrounding, formatGroundingForAgent } from '../desktop-grounding'
@@ -133,7 +134,7 @@ export function registerDesktopGroundingTools(params: {
         return { content }
       }
       catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
+        const message = errorMessageFrom(error) ?? String(error)
         return {
           content: [textContent(`desktop_observe failed: ${message}`)],
           isError: true,

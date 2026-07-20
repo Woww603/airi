@@ -2,6 +2,7 @@ export type {
   ChatAssistantMessage,
   ChatHistoryItem,
   ChatMessage,
+  ChatResponseAlternative,
   ChatSlices,
   ChatSlicesText,
   ChatSlicesToolCall,

@@ -4,6 +4,94 @@ import type { StreamingTtsPipelineOptions } from './streaming-pipeline'
 
 import { createStreamingTtsPipeline } from './streaming-pipeline'
 
+/** Bounds cancelled-turn markers retained across asynchronous Stage preparation. */
+const MAX_STAGE_TTS_TURN_CANCELLATIONS = 1_024
+
+/** Keeps a marker long enough for delayed cross-window hooks to observe cancellation. */
+const MIN_STAGE_TTS_TURN_CANCELLATION_TTL_MS = 60_000
+
+/** A malformed remote deadline cannot retain a TTS cancellation indefinitely. */
+const MAX_STAGE_TTS_TURN_CANCELLATION_TTL_MS = 5 * 60 * 1000
+
+/** Exact-turn cancellation gate used while Stage prepares a TTS session. */
+export interface StageTtsTurnCancellationGate {
+  /** Records cancellation through the bounded deadline replay window. */
+  cancel: (turnId: string, deadlineAt?: number) => void
+  /** Returns whether the exact turn is still cancelled, pruning expired entries first. */
+  isCancelled: (turnId: string) => boolean
+  /** Clears all retained markers when the owning Stage component unmounts. */
+  clear: () => void
+}
+
+/**
+ * Creates the cancellation tombstone boundary for Stage TTS preparation.
+ *
+ * Use when:
+ * - TTS setup awaits browser/audio work before opening a session.
+ * - Cross-window cancellation can arrive before a local session exists.
+ *
+ * Expects:
+ * - `turnId` values are stable exact-turn correlations.
+ * - `now` is monotonic enough for wall-clock deadline comparison.
+ *
+ * Returns:
+ * - A bounded gate whose markers expire no later than five minutes.
+ *
+ * @param now Wall-clock source. Defaults to `Date.now`; tests may provide a fake clock.
+ */
+export function createStageTtsTurnCancellationGate(
+  now: () => number = Date.now,
+): StageTtsTurnCancellationGate {
+  const cancellationsByTurnId = new Map<string, number>()
+  let failClosedUntil = 0
+
+  const prune = (currentTime: number) => {
+    for (const [turnId, expiresAt] of cancellationsByTurnId) {
+      if (expiresAt <= currentTime)
+        cancellationsByTurnId.delete(turnId)
+    }
+    if (failClosedUntil <= currentTime)
+      failClosedUntil = 0
+  }
+
+  return {
+    cancel(turnId, deadlineAt) {
+      const currentTime = now()
+      prune(currentTime)
+      const validDeadline = deadlineAt !== undefined && Number.isFinite(deadlineAt)
+        ? deadlineAt
+        : currentTime
+      const expiresAt = Math.min(
+        Math.max(
+          validDeadline + MIN_STAGE_TTS_TURN_CANCELLATION_TTL_MS,
+          currentTime + MIN_STAGE_TTS_TURN_CANCELLATION_TTL_MS,
+        ),
+        currentTime + MAX_STAGE_TTS_TURN_CANCELLATION_TTL_MS,
+      )
+
+      if (!cancellationsByTurnId.has(turnId) && cancellationsByTurnId.size >= MAX_STAGE_TTS_TURN_CANCELLATIONS) {
+        // Never evict an admitted marker: it may still protect Stage.vue while
+        // lip-sync/audio preparation is awaiting. One bounded timestamp covers
+        // overflow ids and makes unknown TTS turns fail closed until their latest
+        // replay window expires, without growing the per-turn map.
+        failClosedUntil = Math.max(failClosedUntil, expiresAt)
+        return
+      }
+
+      cancellationsByTurnId.set(turnId, expiresAt)
+    },
+    isCancelled(turnId) {
+      const currentTime = now()
+      prune(currentTime)
+      return cancellationsByTurnId.has(turnId) || failClosedUntil > currentTime
+    },
+    clear() {
+      cancellationsByTurnId.clear()
+      failClosedUntil = 0
+    },
+  }
+}
+
 /**
  * Stage-level TTS session abstraction.
  *
@@ -13,10 +101,10 @@ import { createStreamingTtsPipeline } from './streaming-pipeline'
  * streaming provider — forwards raw tokens upstream and lets the model do
  * its own sentence splitting) implement this surface.
  *
- * Stage.vue holds exactly one `StageTtsSession` at any moment and forwards
- * every chat-orchestrator hook into it without branching on provider id.
- * The decision of which adapter to construct lives once in
- * {@link createStageTtsSession}.
+ * Stage.vue keeps one `StageTtsSession` per active chat `turnId` and routes
+ * each correlated chat-orchestrator hook to its owning session without
+ * branching on provider id. The decision of which adapter to construct lives
+ * once in {@link createStageTtsSession}.
  */
 export interface StageTtsSession {
   /** Stable id for this session. Used by playback to scope cancellation. */
@@ -103,14 +191,14 @@ export interface PlaybackManagerSubset<TAudio> {
 /**
  * Internal helpers the streaming adapter calls out to. Lets the adapter
  * react to terminal events (error / done) by clearing whatever state the
- * host is holding — Stage.vue keeps a `currentSession` ref and needs to
- * null it when the underlying ws terminates on its own.
+ * host is holding — Stage.vue keeps a turn-keyed session map and removes only
+ * the matching intent when the underlying WebSocket terminates on its own.
  */
 export interface StreamingSessionHooks {
-  /** Called once when the ws terminates with an error. */
-  onError?: (err: Error) => void
-  /** Called once when the ws terminates (success or error follows). */
-  onDone?: () => void
+  /** Called once with the owning intent when the WebSocket reports an error. */
+  onError?: (err: Error, intentId: string) => void
+  /** Called once with the owning intent when the WebSocket terminates. */
+  onDone?: (intentId: string) => void
 }
 
 export interface CreateStreamingSessionOptions<TAudio = AudioBuffer> {
@@ -179,11 +267,11 @@ export function createStreamingTtsSession<TAudio = AudioBuffer>(
       })
     },
     onError: (err) => {
-      hooks?.onError?.(err)
+      hooks?.onError?.(err, intentId)
     },
     onDone: () => {
       terminated = true
-      hooks?.onDone?.()
+      hooks?.onDone?.(intentId)
     },
   })
 
@@ -270,11 +358,12 @@ export interface StageTtsSessionContext<TAudio = AudioBuffer> {
  * never branch on provider id again.
  *
  * Use when:
- * - `onBeforeMessageComposed` fires and Stage needs a fresh session for
- *   the next LLM intent.
+ * - `onBeforeMessageComposed` fires and Stage needs a fresh session for the
+ *   correlated chat turn.
  *
  * Expects:
- * - Caller has already cancelled / cleared any previous session ref.
+ * - Caller has already cancelled any previous session owned by the same exact
+ *   chat session; unrelated turn sessions may remain active concurrently.
  * - When `transport === 'bidirectional-ws'`, the snapshot's `voice` is
  *   a real voice id and `audioContext` is set; otherwise the factory
  *   silently falls back to the segmenter path (codex review MEDIUM #3
@@ -284,9 +373,9 @@ export interface StageTtsSessionContext<TAudio = AudioBuffer> {
  *   behaviour for every REST provider).
  *
  * Returns:
- * - A `StageTtsSession`. Stage.vue stores it in a single `currentSession`
- *   ref and calls `appendText` / `appendSpecial` / `finishInput` / `end`
- *   / `cancel` on it from the hooks.
+ * - A `StageTtsSession`. Stage.vue stores it by chat `turnId` and calls
+ *   `appendText` / `appendSpecial` / `finishInput` / `end` / `cancel` only
+ *   for hooks carrying that same identifier.
  */
 export function createStageTtsSession<TAudio = AudioBuffer>(
   ctx: StageTtsSessionContext<TAudio>,

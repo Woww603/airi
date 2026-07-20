@@ -5,6 +5,8 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { platform } from 'node:process'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { runProcess, sanitizeFileSegment } from './process'
 
 const placeholderPngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9pP8WwAAAABJRU5ErkJggg=='
@@ -131,7 +133,7 @@ export async function captureScreenshotArtifact(params: {
       screenshotsDir: params.screenshotsDir,
       buffer,
       placeholder: true,
-      note: error instanceof Error ? error.message : String(error),
+      note: errorMessageFrom(error) ?? String(error),
       executionTarget: params.executionTarget,
     })
   }

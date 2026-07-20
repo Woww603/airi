@@ -1,10 +1,12 @@
+import type { ModuleCredential } from '@proj-airi/server-runtime'
 import type { Server, ServerOptions } from '@proj-airi/server-runtime/server'
 import type { Lifecycle } from 'injeca'
 
 import type { ElectronServerChannelConfig } from '../../../../shared/eventa'
+import type { SecureStorageHandle } from '../../electron/secure-storage'
 
 import { randomUUID, X509Certificate } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { isIP } from 'node:net'
 import { join } from 'node:path'
 import { env, platform } from 'node:process'
@@ -29,6 +31,8 @@ import {
 } from '../../../../shared/eventa'
 import { createConfig } from '../../../libs/electron/persistence'
 import { ensureServerChannelConfigDefaults } from './config'
+
+type DiscordModuleIdentity = ModuleCredential['module']['identity']
 
 const channelServerConfigSchema = object({
   hostname: optional(string()),
@@ -56,6 +60,11 @@ const channelServerConfigStore = createConfig('server-channel', 'config.json', c
 })
 let serverChannelServiceRegistered = false
 let serverChannelCertificateTrustConfigured = false
+let secureStorage: SecureStorageHandle | undefined
+
+const SERVER_CHANNEL_AUTH_TOKEN_KEY = 'main/server-channel/auth-token'
+const SERVER_CHANNEL_TLS_KEY_KEY = 'main/server-channel/tls-key'
+const SERVER_CHANNEL_CA_KEY_KEY = 'main/server-channel/ca-key'
 
 interface ServerChannelCertificateVerifyRequest {
   hostname: string
@@ -124,12 +133,40 @@ function getServerChannelQrPayload(config: ElectronServerChannelConfig, serverCh
 
 async function getChannelServerConfig(): Promise<ElectronServerChannelConfig> {
   const config = channelServerConfigStore.get() || { hostname: '127.0.0.1', authToken: '', tlsConfig: null }
+  const secrets = getSecureStorage()
+  let authToken = secrets.getItem(SERVER_CHANNEL_AUTH_TOKEN_KEY)
+
+  if (authToken === null && config.authToken) {
+    await secrets.setItem(SERVER_CHANNEL_AUTH_TOKEN_KEY, config.authToken)
+    authToken = config.authToken
+  }
+
+  const persistedTlsConfig = config.tlsConfig ? {} : null
+  if ('authToken' in config || (config.tlsConfig && Object.keys(config.tlsConfig).length > 0)) {
+    channelServerConfigStore.update({
+      hostname: config.hostname,
+      tlsConfig: persistedTlsConfig,
+    })
+  }
 
   return {
     hostname: config.hostname || '127.0.0.1',
-    authToken: config.authToken || '',
-    tlsConfig: config.tlsConfig || null,
+    authToken: authToken || '',
+    tlsConfig: persistedTlsConfig,
   }
+}
+
+async function persistChannelServerConfig(config: ElectronServerChannelConfig): Promise<void> {
+  const secrets = getSecureStorage()
+  if (config.authToken)
+    await secrets.setItem(SERVER_CHANNEL_AUTH_TOKEN_KEY, config.authToken)
+  else
+    await secrets.removeItem(SERVER_CHANNEL_AUTH_TOKEN_KEY)
+
+  channelServerConfigStore.update({
+    hostname: config.hostname,
+    tlsConfig: config.tlsConfig ? {} : null,
+  })
 }
 
 function getServerRuntimeBaseOptions() {
@@ -139,11 +176,15 @@ function getServerRuntimeBaseOptions() {
   }
 }
 
-async function resolveServerRuntimeOptions(config: ServerOptions): Promise<ServerOptions> {
+async function resolveServerRuntimeOptions(
+  config: ServerOptions,
+  moduleCredentials?: readonly ModuleCredential[],
+): Promise<ServerOptions> {
   return {
     ...getServerRuntimeBaseOptions(),
     auth: {
       token: 'authToken' in config && typeof config.authToken === 'string' ? config.authToken : '',
+      moduleCredentials,
     },
     hostname: 'hostname' in config && typeof config.hostname === 'string'
       ? config.hostname || '127.0.0.1'
@@ -259,7 +300,7 @@ function configureServerChannelCertificateTrust() {
 async function installCACertificate(caCert: string) {
   const { caCertPath } = getCertificatePaths()
   const log = useLogg('main/server-runtime').useGlobalConfig()
-  writeFileSync(caCertPath, caCert)
+  writeFileSync(caCertPath, caCert, { mode: 0o644 })
 
   try {
     if (platform === 'darwin') {
@@ -272,7 +313,7 @@ async function installCACertificate(caCert: string) {
       const caDir = '/usr/local/share/ca-certificates'
       const caFileName = 'airi-websocket-ca.crt'
       try {
-        writeFileSync(join(caDir, caFileName), caCert)
+        writeFileSync(join(caDir, caFileName), caCert, { mode: 0o644 })
         await x('update-ca-certificates', [], { nodeOptions: { stdio: 'ignore' } })
       }
       catch {
@@ -281,7 +322,7 @@ async function installCACertificate(caCert: string) {
           if (!existsSync(userCaDir)) {
             await x('mkdir', ['-p', userCaDir], { nodeOptions: { stdio: 'ignore' } })
           }
-          writeFileSync(join(userCaDir, caFileName), caCert)
+          writeFileSync(join(userCaDir, caFileName), caCert, { mode: 0o644 })
         }
         catch {
           // Ignore errors
@@ -298,11 +339,12 @@ async function generateCertificate() {
   const { caCertPath, caKeyPath } = getCertificatePaths()
 
   let ca: { key: string, cert: string }
+  const protectedCaKey = await getOrMigratePrivateKey(SERVER_CHANNEL_CA_KEY_KEY, caKeyPath)
 
-  if (existsSync(caCertPath) && existsSync(caKeyPath)) {
+  if (existsSync(caCertPath) && protectedCaKey) {
     ca = {
       cert: readFileSync(caCertPath, 'utf-8'),
-      key: readFileSync(caKeyPath, 'utf-8'),
+      key: protectedCaKey,
     }
   }
   else {
@@ -313,8 +355,8 @@ async function generateCertificate() {
       locality: 'Local',
       validity: 365,
     })
-    writeFileSync(caCertPath, ca.cert)
-    writeFileSync(caKeyPath, ca.key)
+    await getSecureStorage().setItem(SERVER_CHANNEL_CA_KEY_KEY, ca.key)
+    writeFileSync(caCertPath, ca.cert, { mode: 0o644 })
   }
 
   await installCACertificate(ca.cert)
@@ -336,35 +378,69 @@ async function generateCertificate() {
 async function getOrCreateCertificate() {
   const { certPath, keyPath, caCertPath } = getCertificatePaths()
   const expectedDomains = getCertificateDomains()
+  const protectedKey = await getOrMigratePrivateKey(SERVER_CHANNEL_TLS_KEY_KEY, keyPath)
 
-  if (existsSync(certPath) && existsSync(keyPath)) {
+  if (existsSync(certPath) && protectedKey) {
     const cert = readFileSync(certPath, 'utf-8')
-    const key = readFileSync(keyPath, 'utf-8')
     if (certHasAllDomains(cert, expectedDomains)) {
       const caCert = existsSync(caCertPath) ? readFileSync(caCertPath, 'utf-8') : undefined
-      return { cert: withCertificateChain(cert, caCert), key }
+      return { cert: withCertificateChain(cert, caCert), key: protectedKey }
     }
   }
 
   const { cert, key } = await generateCertificate()
-  writeFileSync(certPath, cert)
-  writeFileSync(keyPath, key)
+  await getSecureStorage().setItem(SERVER_CHANNEL_TLS_KEY_KEY, key)
+  writeFileSync(certPath, cert, { mode: 0o644 })
 
   const caCert = existsSync(caCertPath) ? readFileSync(caCertPath, 'utf-8') : undefined
   return { cert: withCertificateChain(cert, caCert), key }
 }
 
-export async function setupServerChannel(params: { lifecycle: Lifecycle }): Promise<Server> {
+/** Protected Discord module bootstrap retained only by Electron Main. */
+export interface DiscordBridgeServerBootstrap {
+  /** Loopback websocket endpoint for the managed utility process. */
+  airiUrl: string
+  /** Session-only module authentication credential. */
+  moduleCredential: string
+  /** Immutable module identity bound to the credential. */
+  moduleIdentity: DiscordModuleIdentity
+}
+
+/** Server channel plus Main-only Discord bridge bootstrap access. */
+export interface ServerChannel extends Server {
+  /** Resolves the current loopback URL and session credential for Discord. */
+  getDiscordBridgeBootstrap: () => Promise<DiscordBridgeServerBootstrap>
+}
+
+export async function setupServerChannel(params: { lifecycle: Lifecycle, secureStorage: SecureStorageHandle }): Promise<ServerChannel> {
+  secureStorage = params.secureStorage
   channelServerConfigStore.setup()
   configureServerChannelCertificateTrust()
 
   const storedConfig = await getChannelServerConfig()
   const { changed: storedConfigChanged, config: normalizedStoredConfig } = ensureServerChannelConfigDefaults(storedConfig, randomUUID)
   if (storedConfigChanged) {
-    channelServerConfigStore.update(normalizedStoredConfig)
+    await persistChannelServerConfig(normalizedStoredConfig)
   }
 
-  const serverChannel = createServer(await resolveServerRuntimeOptions(normalizedStoredConfig))
+  const discordModuleIdentity: DiscordModuleIdentity = {
+    id: 'discord-utility-process',
+    kind: 'plugin',
+    plugin: { id: 'discord' },
+  }
+  const discordModuleCredential = randomUUID()
+  const moduleCredentials: readonly ModuleCredential[] = [{
+    token: discordModuleCredential,
+    module: {
+      name: 'discord',
+      identity: discordModuleIdentity,
+    },
+    capabilities: {
+      emit: ['discord:memory:command', 'input:text'],
+      exclusiveEmit: ['discord:memory:command'],
+    },
+  }]
+  const serverChannel = createServer(await resolveServerRuntimeOptions(normalizedStoredConfig, moduleCredentials))
 
   const mutex = new Mutex()
 
@@ -405,6 +481,14 @@ export async function setupServerChannel(params: { lifecycle: Lifecycle }): Prom
   })
 
   return {
+    async getDiscordBridgeBootstrap() {
+      const currentConfig = await getChannelServerConfig()
+      return {
+        airiUrl: createServerChannelUrl(currentConfig.tlsConfig ? 'wss' : 'ws', '127.0.0.1'),
+        moduleCredential: discordModuleCredential,
+        moduleIdentity: discordModuleIdentity,
+      }
+    },
     getConnectionHost() {
       return serverChannel.getConnectionHost()
     },
@@ -439,7 +523,13 @@ export async function setupServerChannel(params: { lifecycle: Lifecycle }): Prom
     async updateConfig(config) {
       const release = await mutex.acquire()
       try {
-        await serverChannel.updateConfig(config)
+        await serverChannel.updateConfig({
+          ...config,
+          auth: {
+            token: config.auth?.token ?? '',
+            moduleCredentials,
+          },
+        })
       }
       finally {
         release()
@@ -480,11 +570,8 @@ export async function createServerChannelService(params: { serverChannel: Server
         await params.serverChannel.updateConfig(nextRuntimeOptions)
         await params.serverChannel.restart()
       }
-      else {
-        await params.serverChannel.start()
-      }
 
-      channelServerConfigStore.update(next)
+      await persistChannelServerConfig(next)
       return next
     }
     catch (error) {
@@ -506,4 +593,27 @@ export async function createServerChannelService(params: { serverChannel: Server
   })
 }
 
-export type { Server as ServerChannel }
+function getSecureStorage(): SecureStorageHandle {
+  if (!secureStorage)
+    throw new Error('Server channel protected storage is not initialized')
+  return secureStorage
+}
+
+async function getOrMigratePrivateKey(protectedKey: string, legacyFilePath: string): Promise<string | null> {
+  const secrets = getSecureStorage()
+  const existing = secrets.getItem(protectedKey)
+  if (existing) {
+    if (existsSync(legacyFilePath))
+      unlinkSync(legacyFilePath)
+    return existing
+  }
+  if (!existsSync(legacyFilePath))
+    return null
+
+  const legacyKey = readFileSync(legacyFilePath, 'utf-8')
+  await secrets.setItem(protectedKey, legacyKey)
+  // Delete plaintext only after the protected write succeeds. A failed write
+  // leaves the legacy key intact so TLS remains recoverable on the next launch.
+  unlinkSync(legacyFilePath)
+  return legacyKey
+}

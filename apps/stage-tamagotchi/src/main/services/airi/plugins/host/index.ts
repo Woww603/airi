@@ -230,7 +230,11 @@ export async function setupPluginHostHostService(
 
   // Kit API, Host
   const builtInKitRuntime = createBuiltInPluginKitRuntime(options)
-  const host = new PluginHost({ runtime: 'electron', contributions: builtInKitRuntime.contributions })
+  const host = new PluginHost({
+    runtime: 'electron',
+    contributions: builtInKitRuntime.contributions,
+    runtimeSessionFactory: options.runtimeSessionFactory,
+  })
   builtInKitRuntime.attachHost(host) // reverse dependency injection
   log.withFields({ pluginsRoot }).log('loading plugin manifests')
   // Once kit injected the host, then apply kits
@@ -514,6 +518,10 @@ export async function setupPluginHostHostService(
     },
     async dispose() {
       autoReloadFeature.dispose()
+
+      for (const name of loaded) {
+        await stopLoadedPluginByName(name)
+      }
 
       moduleAssetSessionCache.clear()
       await pluginAssetService.revokeAll()

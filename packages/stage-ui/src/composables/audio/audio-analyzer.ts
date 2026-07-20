@@ -1,3 +1,4 @@
+import { errorMessageFrom } from '@moeru/std'
 import { onUnmounted, ref } from 'vue'
 
 const amplification = 3 // Amplification factor for volume visualization
@@ -71,7 +72,7 @@ export function useAudioAnalyzer() {
     }
     catch (err) {
       console.error('Error setting up audio monitoring:', err)
-      error.value = err instanceof Error ? err.message : String(err)
+      error.value = errorMessageFrom(err) ?? String(err)
     }
   }
 

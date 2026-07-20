@@ -3,6 +3,8 @@ import type { PromptProjectionSnapshot } from '@proj-airi/stage-ui/stores/devtoo
 
 import { Section } from '@proj-airi/stage-ui/components'
 
+import PromptContributionList from './promptContributionList.vue'
+
 defineProps<{
   currentPromptText: string
   currentSourceCount: number
@@ -118,5 +120,10 @@ defineProps<{
         </div>
       </div>
     </div>
+
+    <PromptContributionList
+      v-if="lastProjection"
+      :contributions="lastProjection.contributions"
+    />
   </Section>
 </template>

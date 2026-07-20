@@ -1,6 +1,6 @@
 import type { Page } from 'playwright'
 
-import type { UserLink, UserProfile, UserStats } from '../core/services/user'
+import type { UserProfile, UserStats } from '../core/services/user'
 
 import { logger } from '../utils/logger'
 import { SELECTORS } from './selectors'
@@ -49,9 +49,6 @@ export class ProfileParser {
 
       // Get join date
       const joinDate = await this.extractJoinDate(page)
-
-      // Get user links
-      // const _links = await this.extractUserLinks(page)
 
       const profile: UserProfile = {
         username,
@@ -214,53 +211,6 @@ export class ProfileParser {
     catch (error) {
       logger.parser.error('Error extracting join date:', (error as Error).message)
       return undefined
-    }
-  }
-
-  /**
-   * Extract user links (website, location)
-   * @param page Playwright page instance
-   * @returns Promise resolving to array of user links
-   */
-  private static async extractUserLinks(page: Page): Promise<UserLink[]> {
-    const links: UserLink[] = []
-
-    try {
-      // Find all link elements in profile
-      const linkElements = await page.$$('a[href^="https"]:not([href*="x.com"])')
-
-      for (const linkElement of linkElements) {
-        // Extract href and title
-        const href = await linkElement.getAttribute('href')
-        const title = await linkElement.textContent()
-
-        if (href && title) {
-          links.push({
-            type: 'url',
-            url: href,
-            title,
-          })
-        }
-      }
-
-      // Try to find location
-      const locationElement = await page.$('span:has-text("Location")')
-      if (locationElement) {
-        const locationText = await locationElement.textContent()
-        if (locationText) {
-          links.push({
-            type: 'location',
-            url: '',
-            title: locationText.replace('Location', '').trim(),
-          })
-        }
-      }
-
-      return links
-    }
-    catch (error) {
-      logger.parser.error('Error extracting user links:', (error as Error).message)
-      return links
     }
   }
 

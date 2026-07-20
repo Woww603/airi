@@ -124,7 +124,7 @@ export interface GroundingStalenessFlags {
   screenshot: boolean
   /** AX tree is stale or unavailable */
   ax: boolean
-  /** Chrome semantic data is stale or unavailable (always true for non-Chrome apps) */
+  /** Chrome semantic data is stale, unavailable, or disabled for this capture. */
   chromeSemantic: boolean
 }
 

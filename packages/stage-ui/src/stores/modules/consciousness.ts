@@ -1,7 +1,7 @@
 import { useLocalStorageManualReset } from '@proj-airi/stage-shared/composables'
 import { refManualReset } from '@vueuse/core'
 import { defineStore } from 'pinia'
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 
 import { useProvidersStore } from '../providers'
 
@@ -14,6 +14,27 @@ export const useConsciousnessStore = defineStore('consciousness', () => {
   const activeCustomModelName = useLocalStorageManualReset<string>('settings/consciousness/active-custom-model', '')
   const expandedDescriptions = refManualReset<Record<string, boolean>>(() => ({}))
   const modelSearchQuery = refManualReset<string>('')
+
+  function applyMigratedProviderFallback() {
+    const deepSeekConfig = providersStore.getProviderConfig('deepseek') as { apiKey?: unknown } | undefined
+    const hasDeepSeekKey = typeof deepSeekConfig?.apiKey === 'string' && deepSeekConfig.apiKey.trim().length > 0
+
+    if (!hasDeepSeekKey)
+      return
+
+    if (!activeProvider.value)
+      activeProvider.value = 'deepseek'
+
+    if (activeProvider.value === 'deepseek' && !activeModel.value)
+      activeModel.value = 'deepseek-chat'
+  }
+
+  applyMigratedProviderFallback()
+
+  watch(
+    () => providersStore.providers.deepseek?.apiKey,
+    () => applyMigratedProviderFallback(),
+  )
 
   // Computed properties
   const supportsModelListing = computed(() => {

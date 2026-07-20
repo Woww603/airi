@@ -48,6 +48,8 @@ export interface SnapResolverOptions {
  * proximity threshold.
  *
  * @param point - The raw coordinate to resolve
+ * @param point.x - Horizontal screen coordinate
+ * @param point.y - Vertical screen coordinate
  * @param snapshot - The current desktop grounding snapshot
  * @param options - Optional resolution parameters
  * @returns The snap resolution with matched candidate and reason

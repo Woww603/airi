@@ -2,26 +2,38 @@ export const ServerErrorMessages = {
   invalidEventFormat: 'invalid event format',
   invalidToken: 'invalid token',
   mustAuthenticateBeforeAnnouncing: 'must authenticate before announcing',
+  mustAnnounceBeforeEvents: 'must announce the authenticated module before sending events',
+  moduleAlreadyRegistered: 'module principal is already registered by another active peer',
   moduleAnnounceIdentityInvalid: 'module identity must include kind=plugin and a plugin id for event \'module:announce\'',
   moduleAnnounceIndexInvalid: 'the field \'index\' must be a non-negative integer for event \'module:announce\'',
   moduleAnnounceNameInvalid: 'the field \'name\' must be a non-empty string for event \'module:announce\'',
+  moduleAuthenticationInvalid: 'module authentication requires a valid module name and plugin identity',
   moduleConsumerEventInvalid: 'the field \'event\' must be a non-empty string for event consumer registration',
+  moduleIdentityMismatch: 'announced module does not match the authenticated module principal',
   moduleNotFound: 'module not found, it hasn\'t announced itself or the name is incorrect',
   noConsumerRegistered: 'no consumer registered for requested event delivery',
   notAuthenticated: 'not authenticated',
+  eventCapabilityDenied: 'authenticated module is not allowed to emit this event',
+  configureCapabilityDenied: 'authenticated module is not allowed to configure this target',
   uiConfigureModuleIndexInvalid: 'the field \'moduleIndex\' must be a non-negative integer for event \'ui:configure\'',
   uiConfigureModuleNameInvalid: 'the field \'moduleName\' can\'t be empty for event \'ui:configure\'',
 } as const
 
 export type ServerErrorCode
-  = | 'invalid-event-format'
+  = | 'configure-capability-denied'
+    | 'event-capability-denied'
+    | 'invalid-event-format'
     | 'invalid-json'
     | 'invalid-token'
+    | 'module-already-registered'
     | 'module-announce-identity-invalid'
     | 'module-announce-index-invalid'
     | 'module-announce-name-invalid'
+    | 'module-authentication-invalid'
     | 'module-consumer-event-invalid'
+    | 'module-identity-mismatch'
     | 'module-not-found'
+    | 'must-announce-before-events'
     | 'must-authenticate-before-announcing'
     | 'no-consumer-registered'
     | 'not-authenticated'
@@ -65,6 +77,12 @@ const errorMetadataRegistry: Record<string, Omit<ParsedServerErrorMessage, 'mess
     recoverable: true,
     terminal: false,
   },
+  [ServerErrorMessages.mustAnnounceBeforeEvents]: {
+    authentication: true,
+    code: 'must-announce-before-events',
+    recoverable: true,
+    terminal: false,
+  },
   [ServerErrorMessages.invalidEventFormat]: {
     authentication: false,
     code: 'invalid-event-format',
@@ -89,6 +107,24 @@ const errorMetadataRegistry: Record<string, Omit<ParsedServerErrorMessage, 'mess
     recoverable: false,
     terminal: false,
   },
+  [ServerErrorMessages.moduleAuthenticationInvalid]: {
+    authentication: true,
+    code: 'module-authentication-invalid',
+    recoverable: false,
+    terminal: true,
+  },
+  [ServerErrorMessages.moduleIdentityMismatch]: {
+    authentication: true,
+    code: 'module-identity-mismatch',
+    recoverable: false,
+    terminal: true,
+  },
+  [ServerErrorMessages.moduleAlreadyRegistered]: {
+    authentication: true,
+    code: 'module-already-registered',
+    recoverable: false,
+    terminal: true,
+  },
   [ServerErrorMessages.moduleNotFound]: {
     authentication: false,
     code: 'module-not-found',
@@ -105,6 +141,18 @@ const errorMetadataRegistry: Record<string, Omit<ParsedServerErrorMessage, 'mess
     authentication: false,
     code: 'no-consumer-registered',
     recoverable: true,
+    terminal: false,
+  },
+  [ServerErrorMessages.eventCapabilityDenied]: {
+    authentication: false,
+    code: 'event-capability-denied',
+    recoverable: false,
+    terminal: false,
+  },
+  [ServerErrorMessages.configureCapabilityDenied]: {
+    authentication: false,
+    code: 'configure-capability-denied',
+    recoverable: false,
     terminal: false,
   },
   [ServerErrorMessages.uiConfigureModuleNameInvalid]: {

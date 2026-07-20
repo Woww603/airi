@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import type { ComputerUseServerRuntime } from './runtime'
 
+import { errorMessageFrom } from '@moeru/std'
 import { z } from 'zod'
 
 import { enumerateDisplays, findDisplayForPoint, formatDisplaySummary } from '../display'
@@ -47,11 +48,11 @@ export function registerDisplayTools({ server, runtime }: RegisterDisplayToolsOp
         return {
           isError: true,
           content: [
-            textContent(`Display enumeration failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`Display enumeration failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }
@@ -109,11 +110,11 @@ export function registerDisplayTools({ server, runtime }: RegisterDisplayToolsOp
         return {
           isError: true,
           content: [
-            textContent(`Display identify failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`Display identify failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }

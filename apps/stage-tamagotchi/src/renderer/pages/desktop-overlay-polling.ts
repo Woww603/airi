@@ -7,6 +7,8 @@
 
 import type { McpCallToolResult } from '@proj-airi/stage-ui/stores/mcp-tool-bridge'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { desktopOverlayPollHeartbeatMarker, desktopOverlayPollHeartbeatQueryParam } from '../../shared/desktop-overlay-heartbeat'
 
 // ---------------------------------------------------------------------------
@@ -265,7 +267,7 @@ export function createOverlayPollController(config: OverlayPollConfig): OverlayP
     }
     catch (e) {
       currentBootstrapState = 'degraded'
-      currentBootstrapError = e instanceof Error ? e.message : String(e)
+      currentBootstrapError = errorMessageFrom(e) ?? String(e)
     }
 
     if (!running)

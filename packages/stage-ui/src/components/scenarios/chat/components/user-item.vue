@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import type { ChatHistoryItem, ChatMessage } from '../../../../types/chat'
+import type { ChatHistoryItem } from '../../../../types/chat'
 
 import { isStageCapacitor, isStageWeb } from '@proj-airi/stage-shared'
-import { computed } from 'vue'
+import { computed, shallowRef } from 'vue'
+
+import MessageTextEditor from './messageTextEditor.vue'
 
 import { MarkdownRenderer } from '../../../markdown'
 import { ChatActionMenu } from '../components/action-menu'
 import { getChatHistoryItemCopyText } from '../utils'
 
 const props = withDefaults(defineProps<{
-  message: Extract<ChatMessage, { role: 'user' }>
+  message: Extract<ChatHistoryItem, { role: 'user' }>
   label: string
   variant?: 'desktop' | 'mobile'
 }>(), {
@@ -19,6 +21,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'copy'): void
   (e: 'delete'): void
+  (e: 'edit', content: string): void
+  (e: 'toggleExclusion'): void
 }>()
 
 const content = computed(() => {
@@ -46,14 +50,35 @@ const boxClasses = computed(() => [
   props.variant === 'mobile' ? 'px-2 py-2 text-sm bg-neutral-100/90 dark:bg-neutral-800/90' : 'px-3 py-3 bg-neutral-100/80 dark:bg-neutral-800/80',
 ])
 const copyText = computed(() => getChatHistoryItemCopyText(props.message as ChatHistoryItem))
+const editing = shallowRef(false)
+const editDraft = shallowRef('')
+
+function startEditing() {
+  editDraft.value = content.value
+  editing.value = true
+}
+
+function cancelEditing() {
+  editing.value = false
+}
+
+function saveEdit(nextContent: string) {
+  emit('edit', nextContent)
+  editing.value = false
+}
 </script>
 
 <template>
   <div v-if="message.role === 'user'" :class="containerClasses" class="ph-no-capture">
     <ChatActionMenu
       :copy-text="copyText"
+      :can-edit="true"
+      :can-toggle-exclusion="true"
+      :excluded-from-prompt="message.excludedFromPrompt"
       placement="left"
       @copy="emit('copy')"
+      @edit="startEditing"
+      @toggle-exclusion="emit('toggleExclusion')"
       @delete="emit('delete')"
     >
       <template #default="{ setMeasuredElement }">
@@ -63,13 +88,24 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
           min-w-20 rounded-xl h="unset <sm:fit"
           :class="[
             boxClasses,
+            message.excludedFromPrompt ? 'opacity-60 ring-1 ring-amber-400/50' : '',
             (isStageWeb() || isStageCapacitor()) && props.variant === 'mobile' ? 'select-none sm:select-auto' : '',
           ]"
         >
           <div>
             <span text-sm text="black/60 dark:white/65" font-normal class="inline <sm:hidden">{{ label }}</span>
+            <span v-if="message.excludedFromPrompt" :class="['ml-2', 'text-xs', 'text-amber-600', 'dark:text-amber-300']">
+              excluded from prompt
+            </span>
           </div>
+          <MessageTextEditor
+            v-if="editing"
+            v-model="editDraft"
+            @cancel="cancelEditing"
+            @save="saveEdit"
+          />
           <MarkdownRenderer
+            v-else
             :content="content as string"
             class="break-words"
           />

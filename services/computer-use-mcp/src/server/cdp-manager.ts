@@ -1,6 +1,8 @@
 import type { CdpBridgeStatus } from '../browser-dom/cdp-bridge'
 import type { ComputerUseConfig } from '../types'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { CdpBridge } from '../browser-dom/cdp-bridge'
 
 const DEFAULT_CDP_URL = 'http://localhost:9222'
@@ -78,7 +80,7 @@ export function createCdpBridgeManager(config: ComputerUseConfig): CdpBridgeMana
           endpoint,
           connected,
           connectable: false,
-          lastError: error instanceof Error ? error.message : String(error),
+          lastError: errorMessageFrom(error) ?? String(error),
         }
       }
     },

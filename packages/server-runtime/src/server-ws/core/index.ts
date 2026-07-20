@@ -97,6 +97,8 @@ export interface ServerWsEventCodec<TEvent> {
  * @param TCloseDetails - Runtime close details object accepted by the close callback.
  */
 export interface ServerWsGatewayHandler<TPeer = unknown, TMessage = unknown, TCloseDetails = unknown> {
+  /** Called before accepting a WebSocket upgrade request. */
+  upgrade?: (request: Request) => Response | void
   /** Called when a peer opens a websocket connection. */
   open?: (peer: TPeer) => void
   /** Called when a peer sends one websocket message. */
@@ -116,7 +118,7 @@ export interface ServerWsPeer {
   /** Sends one payload to the peer. */
   send: (data: unknown, options?: { compress?: boolean }) => number | void | undefined
   /** Closes the peer connection when the runtime exposes an explicit close hook. */
-  close?: () => void
+  close?: (code?: number, reason?: string) => void
   /** WebSocket ready state when exposed by the runtime. */
   readyState?: number
   /** Request metadata associated with the websocket upgrade. */
@@ -156,6 +158,144 @@ export interface ServerWsStickyAssignment {
   group: string
   /** Peer selected for the sticky key. */
   peerId: string
+}
+
+/** Resource limits enforced for one WebSocket gateway instance. */
+export interface ServerWsTrafficLimits {
+  /** Maximum simultaneously tracked connections. */
+  maxConnections: number
+  /** Maximum connections that may remain unauthenticated. */
+  maxUnauthenticatedConnections: number
+  /** Maximum messages accepted from one peer during a fixed window. */
+  maxMessagesPerWindow: number
+  /** Fixed message-rate window duration in milliseconds. */
+  messageWindowMs: number
+  /** Monotonic-enough wall clock used to expire message windows. @default Date.now */
+  now?: () => number
+}
+
+/** Result returned by the WebSocket traffic guard for one attempted operation. */
+export type ServerWsTrafficDecision = { accepted: true } | {
+  accepted: false
+  reason: 'connection-limit' | 'message-rate-limit' | 'unauthenticated-connection-limit' | 'unknown-peer'
+}
+
+/**
+ * Creates an in-memory WebSocket connection and message traffic guard.
+ *
+ * Use when:
+ * - A gateway must cap persistent connections before adding more peer state
+ * - Per-peer message floods must be rejected with bounded memory usage
+ *
+ * Expects:
+ * - Limits have already been normalized to positive finite integers
+ * - Callers remove connections when sockets close
+ *
+ * Returns:
+ * - A gateway-local guard with connection, authentication, and message-window operations
+ */
+export function createServerWsTrafficGuard(options: ServerWsTrafficLimits) {
+  const connections = new Map<string, { authenticated: boolean }>()
+  const messageBuckets = new Map<string, { count: number, resetAt: number }>()
+  const now = options.now ?? Date.now
+
+  return {
+    open(peerId: string, authenticated: boolean): ServerWsTrafficDecision {
+      if (connections.size >= options.maxConnections) {
+        return { accepted: false, reason: 'connection-limit' }
+      }
+
+      if (!authenticated) {
+        let unauthenticatedConnections = 0
+        for (const connection of connections.values()) {
+          if (!connection.authenticated)
+            unauthenticatedConnections += 1
+        }
+
+        if (unauthenticatedConnections >= options.maxUnauthenticatedConnections) {
+          return { accepted: false, reason: 'unauthenticated-connection-limit' }
+        }
+      }
+
+      connections.set(peerId, { authenticated })
+      return { accepted: true }
+    },
+    authenticate(peerId: string): void {
+      const connection = connections.get(peerId)
+      if (connection)
+        connection.authenticated = true
+    },
+    acceptMessage(peerId: string): ServerWsTrafficDecision {
+      if (!connections.has(peerId)) {
+        return { accepted: false, reason: 'unknown-peer' }
+      }
+
+      const currentTime = now()
+      const currentBucket = messageBuckets.get(peerId)
+      const bucket = !currentBucket || currentBucket.resetAt <= currentTime
+        ? { count: 0, resetAt: currentTime + options.messageWindowMs }
+        : currentBucket
+
+      if (bucket.count >= options.maxMessagesPerWindow) {
+        return { accepted: false, reason: 'message-rate-limit' }
+      }
+
+      bucket.count += 1
+      messageBuckets.set(peerId, bucket)
+      return { accepted: true }
+    },
+    close(peerId: string): void {
+      connections.delete(peerId)
+      messageBuckets.delete(peerId)
+    },
+    clear(): void {
+      connections.clear()
+      messageBuckets.clear()
+    },
+  }
+}
+
+/**
+ * Checks a WebSocket handshake Origin against AIRI's explicit browser policy.
+ *
+ * Use when:
+ * - Browser pages can reach a local or LAN WebSocket listener
+ * - Non-browser SDK clients without an Origin header must remain supported
+ *
+ * Expects:
+ * - Configured origins are exact origins, never wildcard or substring patterns
+ *
+ * Returns:
+ * - `true` for non-browser clients, local app origins, or an exact configured origin
+ */
+export function isServerWsOriginAllowed(origin: string | undefined, allowedOrigins: string[]) {
+  if (!origin || origin === 'null' || origin === 'file://') {
+    return true
+  }
+
+  for (const allowedOrigin of allowedOrigins) {
+    if (allowedOrigin === origin) {
+      return true
+    }
+
+    try {
+      if (new URL(allowedOrigin).origin === origin) {
+        return true
+      }
+    }
+    catch {
+      // Invalid configured origins fail closed instead of becoming substring rules.
+    }
+  }
+
+  try {
+    const parsedOrigin = new URL(origin)
+    const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
+    return ['http:', 'https:'].includes(parsedOrigin.protocol) && loopbackHosts.has(parsedOrigin.hostname)
+  }
+  catch {
+    return false
+  }
 }
 
 /**

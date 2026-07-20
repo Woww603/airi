@@ -1,7 +1,7 @@
 import type { ToolMessage } from '@xsai/shared-chat'
 
 import type { AgentHookRegistry, ChatHookRegistry } from '../contracts/hook-types'
-import type { ChatStreamEventContext, StreamingAssistantMessage } from '../types/chat'
+import type { ChatStreamEventContext, ChatTurnCancellationReason, StreamingAssistantMessage } from '../types/chat'
 
 export function createChatHooks(): ChatHookRegistry {
   const onBeforeMessageComposedHooks: Array<(message: string, context: Omit<ChatStreamEventContext, 'composedMessage'>) => Promise<void>> = []
@@ -14,6 +14,7 @@ export function createChatHooks(): ChatHookRegistry {
   const onAssistantResponseEndHooks: Array<(message: string, context: ChatStreamEventContext) => Promise<void>> = []
   const onAssistantMessageHooks: Array<(message: StreamingAssistantMessage, messageText: string, context: ChatStreamEventContext) => Promise<void>> = []
   const onChatTurnCompleteHooks: Array<(chat: { output: StreamingAssistantMessage, outputText: string, toolCalls: ToolMessage[] }, context: ChatStreamEventContext) => Promise<void>> = []
+  const onTurnCancelledHooks: Array<(context: ChatStreamEventContext, reason: ChatTurnCancellationReason) => Promise<void>> = []
 
   function onBeforeMessageComposed(cb: (message: string, context: Omit<ChatStreamEventContext, 'composedMessage'>) => Promise<void>) {
     onBeforeMessageComposedHooks.push(cb)
@@ -105,6 +106,15 @@ export function createChatHooks(): ChatHookRegistry {
     }
   }
 
+  function onTurnCancelled(cb: (context: ChatStreamEventContext, reason: ChatTurnCancellationReason) => Promise<void>) {
+    onTurnCancelledHooks.push(cb)
+    return () => {
+      const index = onTurnCancelledHooks.indexOf(cb)
+      if (index >= 0)
+        onTurnCancelledHooks.splice(index, 1)
+    }
+  }
+
   function clearHooks() {
     onBeforeMessageComposedHooks.length = 0
     onAfterMessageComposedHooks.length = 0
@@ -116,56 +126,117 @@ export function createChatHooks(): ChatHookRegistry {
     onAssistantResponseEndHooks.length = 0
     onAssistantMessageHooks.length = 0
     onChatTurnCompleteHooks.length = 0
+    onTurnCancelledHooks.length = 0
   }
 
-  async function emitBeforeMessageComposedHooks(message: string, context: Omit<ChatStreamEventContext, 'composedMessage'>) {
-    for (const hook of onBeforeMessageComposedHooks)
+  async function emitBeforeMessageComposedHooks(message: string, context: Omit<ChatStreamEventContext, 'composedMessage'>, isTurnActive?: () => boolean) {
+    for (const hook of onBeforeMessageComposedHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(message, context)
+    }
   }
 
-  async function emitAfterMessageComposedHooks(message: string, context: ChatStreamEventContext) {
-    for (const hook of onAfterMessageComposedHooks)
+  async function emitAfterMessageComposedHooks(message: string, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onAfterMessageComposedHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(message, context)
+    }
   }
 
-  async function emitBeforeSendHooks(message: string, context: ChatStreamEventContext) {
-    for (const hook of onBeforeSendHooks)
+  async function emitBeforeSendHooks(message: string, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onBeforeSendHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(message, context)
+    }
   }
 
-  async function emitAfterSendHooks(message: string, context: ChatStreamEventContext) {
-    for (const hook of onAfterSendHooks)
+  async function emitAfterSendHooks(message: string, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onAfterSendHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(message, context)
+    }
   }
 
-  async function emitTokenLiteralHooks(literal: string, context: ChatStreamEventContext) {
-    for (const hook of onTokenLiteralHooks)
+  async function emitTokenLiteralHooks(literal: string, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onTokenLiteralHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(literal, context)
+    }
   }
 
-  async function emitTokenSpecialHooks(special: string, context: ChatStreamEventContext) {
-    for (const hook of onTokenSpecialHooks)
+  async function emitTokenSpecialHooks(special: string, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onTokenSpecialHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(special, context)
+    }
   }
 
-  async function emitStreamEndHooks(context: ChatStreamEventContext) {
-    for (const hook of onStreamEndHooks)
+  async function emitStreamEndHooks(context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onStreamEndHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(context)
+    }
   }
 
-  async function emitAssistantResponseEndHooks(message: string, context: ChatStreamEventContext) {
-    for (const hook of onAssistantResponseEndHooks)
+  async function emitAssistantResponseEndHooks(message: string, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onAssistantResponseEndHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(message, context)
+    }
   }
 
-  async function emitAssistantMessageHooks(message: StreamingAssistantMessage, messageText: string, context: ChatStreamEventContext) {
-    for (const hook of onAssistantMessageHooks)
+  async function emitAssistantMessageHooks(message: StreamingAssistantMessage, messageText: string, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onAssistantMessageHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(message, messageText, context)
+    }
   }
 
-  async function emitChatTurnCompleteHooks(chat: { output: StreamingAssistantMessage, outputText: string, toolCalls: ToolMessage[] }, context: ChatStreamEventContext) {
-    for (const hook of onChatTurnCompleteHooks)
+  async function emitChatTurnCompleteHooks(chat: { output: StreamingAssistantMessage, outputText: string, toolCalls: ToolMessage[] }, context: ChatStreamEventContext, isTurnActive?: () => boolean) {
+    for (const hook of onChatTurnCompleteHooks) {
+      if (isTurnActive?.() === false)
+        return
       await hook(chat, context)
+    }
+  }
+
+  function emitTurnCancelledHooks(context: ChatStreamEventContext, reason: ChatTurnCancellationReason) {
+    // Cancellation is a fan-out cleanup signal, not part of the successful turn
+    // pipeline. Invoke every subscriber immediately so a hanging integration cannot
+    // retain the scheduler slot or prevent a later TTS/session cleanup from starting.
+    for (const [hookIndex, hook] of [...onTurnCancelledHooks].entries()) {
+      try {
+        void Promise.resolve(hook(context, reason)).catch((error) => {
+          // Keep cancellation failures observable without logging message content,
+          // provider payloads, or the error message, which may contain user data.
+          console.error('[core-agent] Chat turn cancellation hook failed', {
+            errorType: error instanceof Error ? error.name : typeof error,
+            hookIndex,
+            reason,
+            turnId: context.turnId,
+          })
+        })
+      }
+      catch (error) {
+        console.error('[core-agent] Chat turn cancellation hook failed', {
+          errorType: error instanceof Error ? error.name : typeof error,
+          hookIndex,
+          reason,
+          turnId: context.turnId,
+        })
+      }
+    }
+
+    return Promise.resolve()
   }
 
   return {
@@ -179,6 +250,7 @@ export function createChatHooks(): ChatHookRegistry {
     onAssistantResponseEnd,
     onAssistantMessage,
     onChatTurnComplete,
+    onTurnCancelled,
     emitBeforeMessageComposedHooks,
     emitAfterMessageComposedHooks,
     emitBeforeSendHooks,
@@ -189,6 +261,7 @@ export function createChatHooks(): ChatHookRegistry {
     emitAssistantResponseEndHooks,
     emitAssistantMessageHooks,
     emitChatTurnCompleteHooks,
+    emitTurnCancelledHooks,
     clearHooks,
   }
 }
@@ -204,6 +277,7 @@ export function createAgentHooks<TContext, TAssistantMessage, TToolCall>(): Agen
   const onAssistantResponseEndHooks: Array<(message: string, context: TContext) => Promise<void>> = []
   const onAssistantMessageHooks: Array<(message: TAssistantMessage, messageText: string, context: TContext) => Promise<void>> = []
   const onChatTurnCompleteHooks: Array<(chat: { output: TAssistantMessage, outputText: string, toolCalls: TToolCall[] }, context: TContext) => Promise<void>> = []
+  const onTurnCancelledHooks: Array<(context: TContext, reason: ChatTurnCancellationReason) => Promise<void>> = []
 
   function createSubscribe<T>(bucket: T[], cb: T) {
     bucket.push(cb)
@@ -225,6 +299,7 @@ export function createAgentHooks<TContext, TAssistantMessage, TToolCall>(): Agen
     onAssistantResponseEndHooks.length = 0
     onAssistantMessageHooks.length = 0
     onChatTurnCompleteHooks.length = 0
+    onTurnCancelledHooks.length = 0
   }
 
   async function emitHooks<T extends any[]>(hooks: Array<(...args: T) => Promise<void>>, ...args: T) {
@@ -243,6 +318,7 @@ export function createAgentHooks<TContext, TAssistantMessage, TToolCall>(): Agen
     onAssistantResponseEnd: cb => createSubscribe(onAssistantResponseEndHooks, cb),
     onAssistantMessage: cb => createSubscribe(onAssistantMessageHooks, cb),
     onChatTurnComplete: cb => createSubscribe(onChatTurnCompleteHooks, cb),
+    onTurnCancelled: cb => createSubscribe(onTurnCancelledHooks, cb),
 
     emitBeforeMessageComposedHooks: (message, context) => emitHooks(onBeforeMessageComposedHooks, message, context),
     emitAfterMessageComposedHooks: (message, context) => emitHooks(onAfterMessageComposedHooks, message, context),
@@ -254,6 +330,7 @@ export function createAgentHooks<TContext, TAssistantMessage, TToolCall>(): Agen
     emitAssistantResponseEndHooks: (message, context) => emitHooks(onAssistantResponseEndHooks, message, context),
     emitAssistantMessageHooks: (message, messageText, context) => emitHooks(onAssistantMessageHooks, message, messageText, context),
     emitChatTurnCompleteHooks: (chat, context) => emitHooks(onChatTurnCompleteHooks, chat, context),
+    emitTurnCancelledHooks: (context, reason) => emitHooks(onTurnCancelledHooks, context, reason),
     clearHooks,
   }
 }

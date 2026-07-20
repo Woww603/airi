@@ -1,5 +1,6 @@
 import type { Locale } from '@intlify/core'
 import type { ServerOptions } from '@proj-airi/server-runtime/server'
+import type { DiscordBridgeConfiguration, DiscordBridgeStatus } from '@proj-airi/stage-shared/discord-bridge'
 import type {
   ShortcutBinding,
   ShortcutRegistrationResult,
@@ -42,6 +43,7 @@ export interface ElectronServerChannelConfig {
 export const electronGetServerChannelConfig = defineInvokeEventa<ElectronServerChannelConfig>('eventa:invoke:electron:server-channel:get-config')
 export const electronApplyServerChannelConfig = defineInvokeEventa<ElectronServerChannelConfig, Partial<ElectronServerChannelConfig>>('eventa:invoke:electron:server-channel:apply-config')
 export const electronGetServerChannelQrPayload = defineInvokeEventa<ServerChannelQrPayload>('eventa:invoke:electron:server-channel:get-qr-payload')
+export const electronConfigureDiscordBridge = defineInvokeEventa<DiscordBridgeStatus, DiscordBridgeConfiguration>('eventa:invoke:electron:discord-bridge:configure')
 
 export type ElectronUpdaterChannel = 'latest' | 'stable' | 'alpha' | 'beta' | 'nightly' | 'canary'
 

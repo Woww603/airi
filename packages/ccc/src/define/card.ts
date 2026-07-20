@@ -31,6 +31,8 @@ interface CardMeta {
 }
 
 interface CardAdditional {
+  /** Character-specific Character Card V3 lorebook. */
+  characterBook?: Data['character_book']
   /**
    * Extensions.
    * - extensions

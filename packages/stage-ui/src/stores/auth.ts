@@ -1,6 +1,7 @@
 import type { Session, User } from 'better-auth'
 
 import { isStageTamagotchi } from '@proj-airi/stage-shared'
+import { useSensitiveStorage } from '@proj-airi/stage-shared/composables'
 import { StorageSerializers, useLocalStorage, useTimeoutFn, whenever } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
@@ -17,19 +18,19 @@ import { refreshAccessToken } from '../libs/auth-oidc'
  * `providers` to safely depend on it without creating a circular import.
  */
 export const useAuthStore = defineStore('auth', () => {
-  const user = useLocalStorage<User | null>('auth/v1/user', null, {
+  const user = useSensitiveStorage<User | null>('auth/v1/user', null, {
     // Why: https://github.com/vueuse/vueuse/pull/614#issuecomment-875450160
     serializer: StorageSerializers.object,
   })
-  const session = useLocalStorage<Session | null>('auth/v1/session', null, { serializer: StorageSerializers.object })
-  const token = useLocalStorage<string | null>('auth/v1/token', null)
-  const refreshToken = useLocalStorage<string | null>('auth/v1/refresh-token', null)
+  const session = useSensitiveStorage<Session | null>('auth/v1/session', null, { serializer: StorageSerializers.object })
+  const token = useSensitiveStorage<string | null>('auth/v1/token', null)
+  const refreshToken = useSensitiveStorage<string | null>('auth/v1/refresh-token', null)
   // NOTICE:
   // Persisted to drive `id_token_hint` on RP-Initiated Logout
   // (`/api/auth/oauth2/end-session`). The `sid` claim inside the ID token is
   // what lets the OIDC provider locate the server-side session row to delete
   // — without this we'd be back to relying on cross-site session cookies.
-  const idToken = useLocalStorage<string | null>('auth/v1/oidc-id-token', null)
+  const idToken = useSensitiveStorage<string | null>('auth/v1/oidc-id-token', null)
   const isAuthenticated = computed(() => !!user.value && !!session.value)
   const userId = computed(() => user.value?.id ?? 'local')
 

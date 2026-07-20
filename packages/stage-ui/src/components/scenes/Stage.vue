@@ -36,7 +36,7 @@ import { useSpeechPipelineAnalytics } from '../../composables/use-speech-pipelin
 import { Emotion, EMOTION_EmotionMotionName_value, EMOTION_VRMExpressionName_value, EmotionThinkMotionName } from '../../constants/emotions'
 import { getDefaultStreamingModel, getDefinedProvider } from '../../libs/providers/providers'
 import { OFFICIAL_SPEECH_PROVIDER_ID } from '../../libs/providers/providers/official'
-import { createStageTtsSession } from '../../libs/speech/tts-session'
+import { createStageTtsSession, createStageTtsTurnCancellationGate } from '../../libs/speech/tts-session'
 import { useAudioContext, useSpeakingStore } from '../../stores/audio'
 import { useBackgroundStore } from '../../stores/background'
 import { useChatOrchestratorStore } from '../../stores/chat'
@@ -93,7 +93,7 @@ const { audioContext } = useAudioContext()
 const currentAudioSource = ref<AudioBufferSourceNode>()
 const { latestStopRequest } = storeToRefs(useSpeechOutputControlStore())
 
-const { onBeforeMessageComposed, onBeforeSend, onTokenLiteral, onTokenSpecial, onStreamEnd, onAssistantResponseEnd } = useChatOrchestratorStore()
+const { onBeforeMessageComposed, onBeforeSend, onTokenLiteral, onTokenSpecial, onStreamEnd, onAssistantResponseEnd, onTurnCancelled } = useChatOrchestratorStore()
 const chatHookCleanups: Array<() => void> = []
 // WORKAROUND: clear previous handlers on unmount to avoid duplicate calls when this component remounts.
 //             We keep per-hook disposers instead of wiping the global chat hooks to play nicely with
@@ -252,6 +252,16 @@ async function playSpecialToken(
 }
 const lipSyncNode = ref<AudioNode>()
 
+// Chat-turn ownership outlives provider streaming while already-scheduled
+// audio is still playing, so cancellation can drain that exact intent.
+const ttsSessionsByTurnId = new Map<string, StageTtsSession>()
+const ttsTurnCancellationGate = createStageTtsTurnCancellationGate()
+const currentTtsTurnIdBySessionId = new Map<string, string>()
+const sessionIdByTtsTurnId = new Map<string, string>()
+const streamingPlaybackItemIdsByTurnId = new Map<string, Set<string>>()
+const ttsTurnIdByStreamingPlaybackItemId = new Map<string, string>()
+const finishedStreamingTtsTurnIds = new Set<string>()
+
 async function playFunction(item: Parameters<Parameters<typeof createPlaybackManager<AudioBuffer>>[0]['play']>[0], signal: AbortSignal): Promise<void> {
   if (!audioContext || !item.audio)
     return
@@ -366,7 +376,7 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
       console.warn('[Speech Pipeline] bidirectional-ws provider reached per-segment fallback', {
         reason: 'streaming session was not opened at intent start (voice unset?)',
         provider: activeSpeechProvider.value,
-        segment: request.text?.slice(0, 40),
+        segmentLength: request.text?.length ?? 0,
       })
       return null
     }
@@ -395,7 +405,7 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
       else {
         // Fallback to default if not in provider config
         model = 'tts-1'
-        console.warn('[Speech Pipeline] OpenAI Compatible: No model in provider config, using default', { providerConfig })
+        console.warn('[Speech Pipeline] OpenAI Compatible: No model in provider config, using default')
       }
 
       if (providerConfig?.voice) {
@@ -420,7 +430,7 @@ const speechPipeline = createSpeechPipeline<AudioBuffer>({
           provider: activeSpeechProvider.value,
           gender: 'neutral',
         }
-        console.warn('[Speech Pipeline] OpenAI Compatible: No voice in provider config, using default', { providerConfig })
+        console.warn('[Speech Pipeline] OpenAI Compatible: No voice in provider config, using default')
       }
     }
 
@@ -513,15 +523,26 @@ speechPipeline.on('onSpecial', (segment) => {
 
 speechPipeline.on('onTurnEnd', (turnId) => {
   streamingControl.completeTurn(turnId)
+  releaseTtsSession(turnId)
 })
 
 speechPipeline.on('onTurnCancel', ({ turnId }) => {
   streamingControl.cancelTurn(turnId)
+  releaseTtsSession(turnId)
 })
 
-playbackManager.onEnd(() => {
+playbackManager.onEnd(({ item }) => {
   nowSpeaking.value = false
   mouthOpenSize.value = 0
+  settleStreamingPlaybackItem(item.id)
+})
+
+playbackManager.onInterrupt(({ item }) => {
+  settleStreamingPlaybackItem(item.id)
+})
+
+playbackManager.onReject(({ item }) => {
+  settleStreamingPlaybackItem(item.id)
 })
 
 playbackManager.onStart(({ item }) => {
@@ -623,23 +644,79 @@ function setupAnalyser() {
   }
 }
 
-// One TTS session per LLM intent. The active provider determines which
-// adapter `createStageTtsSession` returns: the segmenter-based adapter for
-// every non-streaming provider, or the bidirectional WebSocket adapter
-// for the official streaming provider. Stage.vue intentionally does NOT
-// branch on provider id anywhere below — the factory is the single
-// decision point. See `packages/stage-ui/src/libs/speech/tts-session.ts`.
-let currentSession: StageTtsSession | null = null
+// Each concurrent chat turn owns one TTS session. The factory still owns the
+// provider transport decision; this map only correlates literal/special/end and
+// cancellation hooks so one Discord session cannot feed or stop another.
+function trackStreamingPlaybackItem(turnId: string, itemId: string) {
+  const itemIds = streamingPlaybackItemIdsByTurnId.get(turnId) ?? new Set<string>()
+  itemIds.add(itemId)
+  streamingPlaybackItemIdsByTurnId.set(turnId, itemIds)
+  ttsTurnIdByStreamingPlaybackItemId.set(itemId, turnId)
+}
+
+function settleStreamingPlaybackItem(itemId: string) {
+  const turnId = ttsTurnIdByStreamingPlaybackItemId.get(itemId)
+  if (!turnId)
+    return
+
+  ttsTurnIdByStreamingPlaybackItemId.delete(itemId)
+  const itemIds = streamingPlaybackItemIdsByTurnId.get(turnId)
+  itemIds?.delete(itemId)
+  if (itemIds && itemIds.size > 0)
+    return
+
+  streamingPlaybackItemIdsByTurnId.delete(turnId)
+  if (finishedStreamingTtsTurnIds.has(turnId))
+    releaseTtsSession(turnId)
+}
+
+function finishStreamingTtsSession(turnId: string, intentId: string) {
+  if (ttsSessionsByTurnId.get(turnId)?.intentId !== intentId)
+    return
+
+  finishedStreamingTtsTurnIds.add(turnId)
+  if (!streamingPlaybackItemIdsByTurnId.has(turnId))
+    releaseTtsSession(turnId, intentId)
+}
+
+function releaseTtsSession(turnId: string, intentId?: string) {
+  const session = ttsSessionsByTurnId.get(turnId)
+  if (!session || (intentId && session.intentId !== intentId))
+    return
+
+  ttsSessionsByTurnId.delete(turnId)
+  finishedStreamingTtsTurnIds.delete(turnId)
+  for (const itemId of streamingPlaybackItemIdsByTurnId.get(turnId) ?? [])
+    ttsTurnIdByStreamingPlaybackItemId.delete(itemId)
+  streamingPlaybackItemIdsByTurnId.delete(turnId)
+  const sessionId = sessionIdByTtsTurnId.get(turnId)
+  sessionIdByTtsTurnId.delete(turnId)
+  if (sessionId && currentTtsTurnIdBySessionId.get(sessionId) === turnId)
+    currentTtsTurnIdBySessionId.delete(sessionId)
+}
+
+function cancelTtsSession(turnId: string, reason: string) {
+  const session = ttsSessionsByTurnId.get(turnId)
+  if (!session)
+    return
+
+  releaseTtsSession(turnId, session.intentId)
+  session.cancel(reason)
+}
+
+function cancelAllTtsSessions(reason: string) {
+  for (const turnId of ttsSessionsByTurnId.keys())
+    cancelTtsSession(turnId, reason)
+}
 
 function stopSpeechOutput(reason: string) {
-  currentSession?.cancel(reason)
-  currentSession = null
+  cancelAllTtsSessions(reason)
   speechPipeline.stopAll(reason)
   playbackManager.stopAll(reason)
   resetAssistantSpeechSurface(reason)
 }
 
-function buildStreamingSnapshot(): StreamingSessionSnapshot | null {
+function buildStreamingSnapshot(turnId: string): StreamingSessionSnapshot | null {
   // Snapshotted once per session, so a mid-session provider/voice swap
   // does not corrupt an in-flight session — the watcher below detects
   // changes and tears down explicitly. Returns `null` when streaming
@@ -673,7 +750,7 @@ function buildStreamingSnapshot(): StreamingSessionSnapshot | null {
       audio: { sample_rate: 24000, bit_rate: 64000 },
     },
     ownerId: activeCardId.value,
-    onImmediateSpecial: playSpecialToken,
+    onImmediateSpecial: special => void playSpecialToken(special, { turnId }),
   }
 }
 
@@ -687,14 +764,21 @@ function resolveSpeechTransport(providerId: string | null | undefined): SpeechTr
   return getDefinedProvider(providerId)?.capabilities?.speech?.transport
 }
 
-function openTtsSession(): StageTtsSession {
+function openTtsSession(turnId: string): StageTtsSession {
   return createStageTtsSession<AudioBuffer>({
     transport: resolveSpeechTransport(activeSpeechProvider.value),
-    streaming: buildStreamingSnapshot,
+    streaming: () => buildStreamingSnapshot(turnId),
     audioContext,
-    playbackManager,
+    playbackManager: {
+      schedule: (item) => {
+        trackStreamingPlaybackItem(turnId, item.id)
+        playbackManager.schedule(item)
+      },
+      stopByIntent: (intentId, reason) => playbackManager.stopByIntent(intentId, reason),
+    },
     openIntent: opts => speechRuntimeStore.openIntent(opts),
     intentOptions: () => ({
+      turnId,
       ownerId: activeCardId.value,
       priority: 'normal',
       behavior: 'queue',
@@ -706,12 +790,9 @@ function openTtsSession(): StageTtsSession {
           model: activeSpeechModel.value,
           error: err,
         })
-        if (currentSession?.intentId.startsWith('stream-'))
-          currentSession = null
       },
-      onDone: () => {
-        if (currentSession?.intentId.startsWith('stream-'))
-          currentSession = null
+      onDone: (intentId) => {
+        finishStreamingTtsSession(turnId, intentId)
       },
     },
   })
@@ -724,42 +805,47 @@ watch(latestStopRequest, (request) => {
   stopSpeechOutput(request.reason)
 })
 
-chatHookCleanups.push(onBeforeMessageComposed(async () => {
-  playbackManager.stopAll('new-message')
+chatHookCleanups.push(onBeforeMessageComposed(async (_message, context) => {
+  if (ttsTurnCancellationGate.isCancelled(context.turnId))
+    return
+
+  const previousTurnId = currentTtsTurnIdBySessionId.get(context.sessionId)
+  if (previousTurnId && previousTurnId !== context.turnId)
+    cancelTtsSession(previousTurnId, 'new-message')
 
   setupAnalyser()
   await setupLipSync()
+  if (ttsTurnCancellationGate.isCancelled(context.turnId))
+    return
   resetAssistantSpeechSurface('new-message')
 
-  currentSession?.cancel('new-message')
-  currentSession = openTtsSession()
+  const session = openTtsSession(context.turnId)
+  ttsSessionsByTurnId.set(context.turnId, session)
+  currentTtsTurnIdBySessionId.set(context.sessionId, context.turnId)
+  sessionIdByTtsTurnId.set(context.turnId, context.sessionId)
 }))
 
 chatHookCleanups.push(onBeforeSend(async () => {
   currentMotion.value = { group: EmotionThinkMotionName }
 }))
 
-chatHookCleanups.push(onTokenLiteral(async (literal) => {
-  currentSession?.appendText(literal)
+chatHookCleanups.push(onTokenLiteral(async (literal, context) => {
+  ttsSessionsByTurnId.get(context.turnId)?.appendText(literal)
 }))
 
-chatHookCleanups.push(onTokenSpecial(async (special) => {
-  currentSession?.appendSpecial(special)
+chatHookCleanups.push(onTokenSpecial(async (special, context) => {
+  ttsSessionsByTurnId.get(context.turnId)?.appendSpecial(special)
 }))
 
-chatHookCleanups.push(onStreamEnd(async () => {
-  currentSession?.finishInput()
+chatHookCleanups.push(onStreamEnd(async (context) => {
+  ttsSessionsByTurnId.get(context.turnId)?.finishInput()
 }))
 
-chatHookCleanups.push(onAssistantResponseEnd(async (_message) => {
-  currentSession?.end()
-  // Streaming sessions null-out via the onDone hook; segmenter sessions
-  // stay around until the next `onBeforeMessageComposed` cancels them
-  // (the segmenter pipeline's IntentHandle.end is idempotent and
-  // ResourceMessages still arrive after end() — clearing here would
-  // race with the pipeline's own cleanup). Keep the ref pointing at
-  // the just-ended session; it costs nothing and the next message
-  // replaces it.
+chatHookCleanups.push(onAssistantResponseEnd(async (_message, context) => {
+  ttsSessionsByTurnId.get(context.turnId)?.end()
+  // Segmenter sessions remain addressable until their onTurnEnd/onTurnCancel
+  // event because queued playback still belongs to that intent. Streaming
+  // sessions release themselves through their intent-correlated onDone hook.
   // const res = await embed({
   //   ...transformersProvider.embed('Xenova/nomic-embed-text-v1'),
   //   input: message,
@@ -768,16 +854,19 @@ chatHookCleanups.push(onAssistantResponseEnd(async (_message) => {
   // await db.value?.execute(`INSERT INTO memory_test (vec) VALUES (${JSON.stringify(res.embedding)});`)
 }))
 
+chatHookCleanups.push(onTurnCancelled(async (context, reason) => {
+  ttsTurnCancellationGate.cancel(context.turnId, context.deadlineAt)
+  cancelTtsSession(context.turnId, `chat-turn-${reason}`)
+}))
+
 // Mid-session provider / voice / model swaps would otherwise keep feeding
-// tokens to the OLD adapter (segmenter for the new provider, or stale ws
-// for the streaming provider). Cancel the active session so the next LLM
-// token after the swap falls through `currentSession?.` cleanly (silent
-// drop is acceptable — we don't try to fork-replay text into a new
-// adapter with potentially different voice/model).
+// tokens to OLD adapters (segmenter for the new provider, or stale ws for the
+// streaming provider). A provider swap is explicitly global, so it may clear
+// all turn-owned sessions; later tokens fall through the map lookup cleanly.
 watch(
   [activeSpeechProvider, () => activeSpeechVoice.value?.id, activeSpeechModel],
   ([provider, voiceId, model], [prevProvider, prevVoiceId, prevModel]) => {
-    if (!currentSession)
+    if (ttsSessionsByTurnId.size === 0)
       return
     if (provider === prevProvider && voiceId === prevVoiceId && model === prevModel)
       return
@@ -789,8 +878,7 @@ watch(
       model,
       prevModel,
     })
-    currentSession.cancel('provider-or-voice-changed')
-    currentSession = null
+    stopSpeechOutput('provider-or-voice-changed')
   },
 )
 
@@ -909,8 +997,8 @@ onUnmounted(() => {
   // feeding sentences into a playbackManager whose listeners still
   // mutate component refs (caption / nowSpeaking). Codex review: HIGH
   // #1 + MEDIUM #5.
-  currentSession?.cancel('unmount')
-  currentSession = null
+  cancelAllTtsSessions('unmount')
+  ttsTurnCancellationGate.clear()
   playbackManager.stopAll('unmount')
 })
 

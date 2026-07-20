@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import type { ComputerUseServerRuntime } from './runtime'
 
+import { errorMessageFrom } from '@moeru/std'
 import { z } from 'zod'
 
 import { captureAXTree, formatAXSnapshotAsText } from '../accessibility'
@@ -55,11 +56,11 @@ export function registerAccessibilityTools({ server, runtime }: RegisterAccessib
         return {
           isError: true,
           content: [
-            textContent(`Accessibility snapshot failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`Accessibility snapshot failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }
@@ -128,11 +129,11 @@ export function registerAccessibilityTools({ server, runtime }: RegisterAccessib
         return {
           isError: true,
           content: [
-            textContent(`Accessibility find failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`Accessibility find failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }

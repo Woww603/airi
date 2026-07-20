@@ -13,6 +13,8 @@ import { hostname } from 'node:os'
 import { basename } from 'node:path'
 import { argv, pid, platform, ppid, title } from 'node:process'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { enumerateDisplays } from './display'
 import { runProcess } from './utils/process'
 import { runSwiftScript } from './utils/swift'
@@ -108,7 +110,7 @@ export async function probeDisplayInfo(config: ComputerUseConfig): Promise<Displ
     return {
       available: false,
       platform,
-      note: error instanceof Error ? error.message : String(error),
+      note: errorMessageFrom(error) ?? String(error),
     }
   }
 }
@@ -141,7 +143,7 @@ print(AXIsProcessTrusted() ? "granted" : "missing")
       status: 'unknown',
       target: resolveLaunchContext(config).launchHostProcess,
       checkedBy: 'AXIsProcessTrusted',
-      note: error instanceof Error ? error.message : String(error),
+      note: errorMessageFrom(error) ?? String(error),
     }
   }
 }
@@ -175,7 +177,7 @@ print(CGPreflightScreenCaptureAccess() ? "granted" : "missing")
       status: 'unknown',
       target: resolveLaunchContext(config).launchHostProcess,
       checkedBy: 'CGPreflightScreenCaptureAccess',
-      note: error instanceof Error ? error.message : String(error),
+      note: errorMessageFrom(error) ?? String(error),
     }
   }
 }
@@ -210,7 +212,7 @@ async function probeAutomation(config: ComputerUseConfig): Promise<PermissionPro
       status: 'missing',
       target: `${launchContext.launchHostProcess} -> System Events`,
       checkedBy: 'osascript/System Events foreground probe',
-      note: error instanceof Error ? error.message : String(error),
+      note: errorMessageFrom(error) ?? String(error),
     }
   }
 }

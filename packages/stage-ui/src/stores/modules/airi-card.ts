@@ -276,6 +276,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
         notesMultilingual: ccv3Card.data.creator_notes_multilingual,
         personality: ccv3Card.data.personality ?? '',
         scenario: ccv3Card.data.scenario ?? '',
+        characterBook: ccv3Card.data.character_book,
         greetings: [
           ccv3Card.data.first_mes,
           ...(ccv3Card.data.alternate_greetings ?? []),

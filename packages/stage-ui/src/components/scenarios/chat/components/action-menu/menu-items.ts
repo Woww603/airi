@@ -1,7 +1,7 @@
 /**
  * Represents supported chat message action identifiers.
  */
-export type ChatActionMenuAction = 'copy' | 'retry' | 'delete'
+export type ChatActionMenuAction = 'copy' | 'edit' | 'retry' | 'toggle-exclusion' | 'delete'
 
 /**
  * Represents one visible action in a chat message action menu.
@@ -50,12 +50,15 @@ export interface ChatActionMenuTriggerState {
  * - Boolean flags already reflect message capability and visibility rules
  *
  * Returns:
- * - Menu items ordered as copy, retry, delete
+ * - Menu items ordered as copy, edit, retry, prompt exclusion, delete
  */
 export function createChatActionMenuItems(options: {
   canCopy: boolean
+  canEdit: boolean
   canRetry: boolean
+  canToggleExclusion: boolean
   canDelete: boolean
+  excludedFromPrompt?: boolean
   retryLabel?: string
 }): ChatActionMenuItem[] {
   return [
@@ -66,11 +69,25 @@ export function createChatActionMenuItems(options: {
           icon: 'i-solar:copy-bold',
         }
       : null,
+    options.canEdit
+      ? {
+          action: 'edit',
+          label: 'Edit',
+          icon: 'i-solar:pen-new-square-bold',
+        }
+      : null,
     options.canRetry
       ? {
           action: 'retry',
           label: options.retryLabel ?? 'Retry',
           icon: 'i-solar:refresh-bold',
+        }
+      : null,
+    options.canToggleExclusion
+      ? {
+          action: 'toggle-exclusion',
+          label: options.excludedFromPrompt ? 'Include in prompt' : 'Exclude from prompt',
+          icon: options.excludedFromPrompt ? 'i-solar:eye-bold' : 'i-solar:eye-closed-bold',
         }
       : null,
     options.canDelete

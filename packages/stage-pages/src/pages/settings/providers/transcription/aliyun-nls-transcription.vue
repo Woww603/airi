@@ -6,6 +6,7 @@ import type { TranscriptionProviderWithExtraOptions } from '@xsai-ext/providers/
 
 import vadWorkletUrl from '@proj-airi/stage-ui/workers/vad/process.worklet?worker&url'
 
+import { errorMessageFrom } from '@moeru/std'
 import {
   Alert,
   ProviderBasicSettings,
@@ -240,7 +241,7 @@ async function startStreaming() {
           },
           onSessionTerminated: async (error?: unknown) => {
             if (error)
-              errorMessage.value = error instanceof Error ? error.message : String(error)
+              errorMessage.value = errorMessageFrom(error) ?? String(error)
             isStreaming.value = false
             transcriptionAbortController.value = undefined
           },
@@ -259,7 +260,7 @@ async function startStreaming() {
     activeTranscription.value = result
     transcriptionTextPromise.value = result.text
       .catch((error) => {
-        errorMessage.value = error instanceof Error ? error.message : String(error)
+        errorMessage.value = errorMessageFrom(error) ?? String(error)
         throw error
       })
 
@@ -283,7 +284,7 @@ async function startStreaming() {
     isStreaming.value = true
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : String(error)
+    errorMessage.value = errorMessageFrom(error) ?? String(error)
     await stopStreaming()
   }
 }

@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": [
+      "DOM",
+      "ESNext"
+    ],
+    "types": [
+      "electron-vite/node",
+      "node"
+    ]
+  },
+  "include": [
+    "electron-builder.config.ts",
+    "electron.vite.config.ts",
+    "src/**/*.ts"
+  ]
+}

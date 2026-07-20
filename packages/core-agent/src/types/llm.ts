@@ -11,6 +11,8 @@ export type StreamEvent
     | { type: 'error', error: any }
 
 export interface StreamOptions {
+  /** Stable turn correlation used by adapters for lifecycle ownership. */
+  turnId?: string
   abortSignal?: AbortSignal
   headers?: Record<string, string>
   onStreamEvent?: (event: StreamEvent) => void | Promise<void>

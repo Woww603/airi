@@ -32,6 +32,9 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'copyMessage', payload: { message: ChatHistoryItem, index: number, key: string | number }): void
   (e: 'deleteMessage', payload: { message: ChatHistoryItem, index: number, key: string | number }): void
+  (e: 'editMessage', payload: { message: ChatHistoryItem, index: number, key: string | number, content: string }): void
+  (e: 'setMessageExcluded', payload: { message: ChatHistoryItem, index: number, key: string | number, excluded: boolean }): void
+  (e: 'selectResponseAlternative', payload: { message: ChatHistoryItem, index: number, key: string | number, alternativeIndex: number }): void
   (e: 'retryMessage', payload: { message: ChatHistoryItem, index: number, key: string | number }): void
 }>()
 
@@ -100,6 +103,33 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
     key: getChatHistoryItemKey(message, index),
   })
 }
+
+function emitEditMessage(message: ChatHistoryItem, index: number, content: string) {
+  emit('editMessage', {
+    content,
+    message,
+    index,
+    key: getChatHistoryItemKey(message, index),
+  })
+}
+
+function emitSetMessageExcluded(message: ChatHistoryItem, index: number) {
+  emit('setMessageExcluded', {
+    excluded: !message.excludedFromPrompt,
+    message,
+    index,
+    key: getChatHistoryItemKey(message, index),
+  })
+}
+
+function emitSelectResponseAlternative(message: ChatHistoryItem, index: number, alternativeIndex: number) {
+  emit('selectResponseAlternative', {
+    alternativeIndex,
+    message,
+    index,
+    key: getChatHistoryItemKey(message, index),
+  })
+}
 </script>
 
 <template>
@@ -130,6 +160,10 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
           :variant="variant"
           :tool-call-renderers="toolCallRenderers"
           @copy="emitCopyMessage(message, index)"
+          @edit="emitEditMessage(message, index, $event)"
+          @retry="emitRetryMessage(message, index)"
+          @select-alternative="emitSelectResponseAlternative(message, index, $event)"
+          @toggle-exclusion="emitSetMessageExcluded(message, index)"
           @delete="emitDeleteMessage(message, index)"
         />
         <ChatUserItem
@@ -138,6 +172,8 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
           :label="labels.user"
           :variant="variant"
           @copy="emitCopyMessage(message, index)"
+          @edit="emitEditMessage(message, index, $event)"
+          @toggle-exclusion="emitSetMessageExcluded(message, index)"
           @delete="emitDeleteMessage(message, index)"
         />
       </div>

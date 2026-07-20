@@ -72,6 +72,8 @@ function defaultHttpMessage(status: number) {
     return 'Forbidden'
   if (status === 404)
     return 'Not Found'
+  if (status === 413)
+    return 'Payload Too Large'
   if (status >= 500)
     return 'Internal Server Error'
   return 'Request Failed'

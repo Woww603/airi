@@ -10,6 +10,14 @@ import { useSpeechStore } from '@proj-airi/stage-ui/stores/modules/speech'
 import { Button, Select } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
 import {
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogOverlay,
+  AlertDialogPortal,
+  AlertDialogRoot,
+  AlertDialogTitle,
   DialogContent,
   DialogOverlay,
   DialogPortal,
@@ -44,6 +52,7 @@ const { activeProvider: consciousnessProvider, activeModel: defaultConsciousness
 const { activeSpeechProvider: speechProvider, activeSpeechModel: defaultSpeechModel, activeSpeechVoiceId: defaultVoiceId } = storeToRefs(speechStore)
 
 const isRefreshingGallery = ref(false)
+const pendingJournalEntryId = ref<string>()
 
 // Get selected card data
 const selectedCard = computed<AiriCard | undefined>(() => {
@@ -213,10 +222,21 @@ async function handleSetAsBackground(entry: any) {
   activeBackgroundId.value = entry.id
 }
 
-async function handleDeleteEntry(id: string) {
-  if (confirm('Are you sure you want to delete this image from the journal?')) {
-    await backgroundStore.removeBackground(id)
-  }
+function requestDeleteEntry(id: string) {
+  pendingJournalEntryId.value = id
+}
+
+async function confirmDeleteEntry() {
+  if (!pendingJournalEntryId.value)
+    return
+
+  await backgroundStore.removeBackground(pendingJournalEntryId.value)
+  pendingJournalEntryId.value = undefined
+}
+
+function handleJournalDeleteDialogOpenChange(open: boolean) {
+  if (!open)
+    pendingJournalEntryId.value = undefined
 }
 
 async function handleRefreshGallery() {
@@ -573,7 +593,7 @@ function getModuleDisplayValue(value: string | undefined, defaultValue: string |
                     </button>
                     <button
                       class="flex items-center gap-1 rounded-full bg-red-500/80 px-3 py-1.5 text-[10px] text-white font-bold backdrop-blur-md transition-all active:scale-95 hover:bg-red-500"
-                      @click="handleDeleteEntry(entry.id)"
+                      @click="requestDeleteEntry(entry.id)"
                     >
                       <div class="i-solar:trash-bin-trash-linear" />
                       DELETE
@@ -613,4 +633,35 @@ function getModuleDisplayValue(value: string | undefined, defaultValue: string |
     @confirm="handleDeleteConfirm"
     @cancel="showDeleteConfirm = false"
   />
+
+  <AlertDialogRoot :open="pendingJournalEntryId != null" @update:open="handleJournalDeleteDialogOpenChange">
+    <AlertDialogPortal>
+      <AlertDialogOverlay class="fixed inset-0 z-100 bg-black/50 data-[state=closed]:animate-fadeOut data-[state=open]:animate-fadeIn" />
+      <AlertDialogContent
+        :class="[
+          'fixed left-1/2 top-1/2 z-101 max-w-md w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2',
+          'rounded-xl bg-white p-6 shadow-xl dark:bg-neutral-900',
+        ]"
+      >
+        <AlertDialogTitle class="mb-3 text-lg font-medium">
+          {{ t('settings.pages.card.delete') }}
+        </AlertDialogTitle>
+        <AlertDialogDescription class="mb-6 text-sm text-neutral-600 dark:text-neutral-300">
+          Are you sure you want to delete this image from the journal?
+        </AlertDialogDescription>
+        <div class="flex justify-end gap-2">
+          <AlertDialogCancel as-child>
+            <Button variant="secondary">
+              {{ t('settings.pages.card.cancel') }}
+            </Button>
+          </AlertDialogCancel>
+          <AlertDialogAction as-child>
+            <Button variant="danger" @click="confirmDeleteEntry">
+              {{ t('settings.pages.card.delete') }}
+            </Button>
+          </AlertDialogAction>
+        </div>
+      </AlertDialogContent>
+    </AlertDialogPortal>
+  </AlertDialogRoot>
 </template>

@@ -46,6 +46,14 @@ export interface ToolsetPromptRegistryRecord {
   availability?: () => Promise<boolean> | boolean
 }
 
+/** Controls resource limits for plugin-owned tool execution. */
+export interface ToolRegistryOptions {
+  /** Maximum plugin tool executions that may remain active at once. @default 4 */
+  maxConcurrentInvocations?: number
+  /** Maximum time a caller waits for one plugin tool execution. @default 120000 */
+  invocationTimeoutMs?: number
+}
+
 /**
  * In-memory registry for plugin-contributed tools.
  *
@@ -62,6 +70,18 @@ export interface ToolsetPromptRegistryRecord {
 export class ToolRegistryService {
   private readonly tools = new Map<string, ToolRegistryRecord>()
   private readonly toolsetPrompts = new Map<string, ToolsetPromptRegistryRecord>()
+  private readonly maxConcurrentInvocations: number
+  private readonly invocationTimeoutMs: number
+  private activeInvocations = 0
+
+  constructor(options: ToolRegistryOptions = {}) {
+    this.maxConcurrentInvocations = Number.isFinite(options.maxConcurrentInvocations)
+      ? Math.min(Math.max(Math.trunc(options.maxConcurrentInvocations!), 1), 64)
+      : 4
+    this.invocationTimeoutMs = Number.isFinite(options.invocationTimeoutMs)
+      ? Math.min(Math.max(Math.trunc(options.invocationTimeoutMs!), 1), 10 * 60 * 1000)
+      : 2 * 60 * 1000
+  }
 
   register(record: ToolRegistryRecord) {
     const key = `${record.ownerPluginId}:${record.tool.id}`
@@ -144,6 +164,33 @@ export class ToolRegistryService {
       throw new Error(`Plugin tool not found: ${key}`)
     }
 
-    return await record.execute(input)
+    if (this.activeInvocations >= this.maxConcurrentInvocations) {
+      throw new Error('Plugin tool concurrent invocation limit reached.')
+    }
+
+    this.activeInvocations += 1
+    const execution = Promise.resolve().then(() => record.execute(input))
+
+    return await new Promise<unknown>((resolve, reject) => {
+      let callerSettled = false
+      const timer = setTimeout(() => {
+        callerSettled = true
+        reject(new Error(`Plugin tool invocation timed out after ${this.invocationTimeoutMs} ms.`))
+      }, this.invocationTimeoutMs)
+
+      execution.then(
+        (value) => {
+          if (!callerSettled)
+            resolve(value)
+        },
+        (error) => {
+          if (!callerSettled)
+            reject(error)
+        },
+      ).finally(() => {
+        clearTimeout(timer)
+        this.activeInvocations -= 1
+      })
+    })
   }
 }

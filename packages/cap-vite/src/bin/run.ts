@@ -19,6 +19,9 @@ async function main() {
 }
 
 void main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  let message = String(error)
+  if (error instanceof Error)
+    message = error.message
+  process.stderr.write(`${message}\n`)
   process.exit(1)
 })

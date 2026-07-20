@@ -1,28 +1,43 @@
 import process, { env } from 'node:process'
 
+import { fileURLToPath } from 'node:url'
+
 import { Format, LogLevel, setGlobalFormat, setGlobalLogLevel, useLogg } from '@guiiai/logg'
 
-import { DiscordAdapter } from './adapters/airi-adapter'
+import { startStandaloneDiscordAppRuntime } from './standalone/app-runtime'
 
 setGlobalFormat(Format.Pretty)
 setGlobalLogLevel(LogLevel.Log)
 const log = useLogg('Bot').useGlobalConfig()
 
-// Create a new client instance
-async function main() {
-  // Create Discord adapter with configuration
-  const adapter = new DiscordAdapter({
-    discordToken: env.DISCORD_TOKEN || '', // Fallback to env, but will be updated via WebSocket
-    airiToken: env.AIRI_TOKEN || 'abcd',
-    airiUrl: env.AIRI_URL || 'ws://localhost:6121/ws',
+/**
+ * Runs standalone Discord with its local dashboard.
+ *
+ * Call stack:
+ *
+ * main
+ *   -> {@link runStandaloneDiscordApp}
+ *     -> {@link StandaloneDashboardServer.start}
+ *     -> {@link StandaloneDiscordAppController.startBot}
+ */
+async function runStandaloneDiscordApp() {
+  const runtime = await startStandaloneDiscordAppRuntime({
+    env,
+    envFilePath: fileURLToPath(new URL('../.env.local', import.meta.url)),
   })
+  if (runtime.dashboardAddress)
+    log.withFields({ dashboardReady: true }).log('[discord-bot:standalone] dashboard ready')
 
-  await adapter.start()
+  if (!runtime.startResult.ok) {
+    log.withFields({
+      dashboardEnabled: Boolean(runtime.dashboardAddress),
+      failureCategory: 'standalone-start-failure',
+    }).error('[discord-bot:standalone] startup failed')
+  }
 
-  // Set up process shutdown hooks
   async function gracefulShutdown(signal: string) {
     log.log(`Received ${signal}, shutting down...`)
-    await adapter.stop()
+    await runtime.stop()
     process.exit(0)
   }
 
@@ -35,4 +50,26 @@ async function main() {
   })
 }
 
-main().catch(err => log.withError(err).error('An error occurred'))
+/**
+ * Runs the only supported source-level Discord service entrypoint.
+ *
+ * Call stack:
+ *
+ * main
+ *   -> {@link runStandaloneDiscordApp}
+ *     -> {@link startStandaloneDiscordAppRuntime}
+ *
+ * Electron bridge mode is owned by Tamagotchi Main and its protected utility
+ * process; it intentionally has no environment-driven service entrypoint.
+ */
+async function main() {
+  log.withFields({
+    hasDiscordToken: Boolean(env.DISCORD_TOKEN),
+    mode: 'standalone',
+  }).log('[discord-bot] boot')
+  await runStandaloneDiscordApp()
+}
+
+main().catch(() => log.withFields({
+  failureCategory: 'standalone-runtime-failure',
+}).error('[discord-bot:standalone] runtime failed'))

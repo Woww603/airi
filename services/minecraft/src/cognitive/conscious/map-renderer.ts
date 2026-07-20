@@ -304,8 +304,15 @@ function renderTopDown(bot: Bot, options: Required<MapOptions>): MapResult {
 
   // Build the grid: each cell is [symbol, elevation_delta]
   const size = r * 2 + 1
-  const grid: string[][] = Array.from({ length: size }).fill(Array.from({ length: size }).fill(' '))
-  const elevations: (number | null)[][] = Array.from({ length: size }).fill(Array.from({ length: size }).fill(null))
+  // Allocate every row independently; sharing one filled row would mirror each
+  // block and entity update across the entire Z axis.
+  // NOTICE:
+  // Array.from({ length }).fill(value) is inferred as unknown[] even though fill replaces every slot.
+  // The root cause is TypeScript's empty ArrayLike inference combined with e18e/prefer-array-fill.
+  // Source/context: this module's independent-row regression tests and the repository ESLint rules.
+  // Removal condition: TypeScript infers the filled value type or the lint rule accepts a typed mapper.
+  const grid = Array.from({ length: size }, () => Array.from({ length: size }).fill(' ') as string[])
+  const elevations = Array.from({ length: size }, () => Array.from({ length: size }).fill(null) as (number | null)[])
   const usedCategories = new Set<BlockCategory>()
 
   for (let dz = -r; dz <= r; dz++) {
@@ -454,7 +461,9 @@ function renderCrossSection(bot: Bot, options: Required<MapOptions>): MapResult 
   const yTop = cy + r
   const yBottom = cy - r
 
-  const grid: string[][] = Array.from({ length: height }).fill(Array.from({ length: width }).fill(' '))
+  // Cross-section cells must not share row storage because each Y level is
+  // rendered independently.
+  const grid = Array.from({ length: height }, () => Array.from({ length: width }).fill(' ') as string[])
   const usedCategories = new Set<BlockCategory>()
 
   for (let dy = -r; dy <= r; dy++) {

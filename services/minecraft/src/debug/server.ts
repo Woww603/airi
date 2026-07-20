@@ -11,6 +11,7 @@ import process from 'node:process'
 
 import { fileURLToPath } from 'node:url'
 
+import { errorMessageFrom } from '@moeru/std'
 import { clamp } from 'es-toolkit/math'
 import { nanoid } from 'nanoid'
 import { WebSocketServer } from 'ws'
@@ -456,7 +457,7 @@ export class DebugServer {
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
         error: 'failed to read log file',
-        message: err instanceof Error ? err.message : String(err),
+        message: errorMessageFrom(err) ?? String(err),
       }))
     }
   }

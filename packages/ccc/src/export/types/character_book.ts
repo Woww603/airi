@@ -18,9 +18,16 @@ export interface CharacterBookEntry {
   enabled: boolean
   extensions: CharacterBookEntryExtensions
 
+  /**
+   * Treat `keys` as regular-expression patterns instead of literal strings.
+   *
+   * @default false for Character Card V2 compatibility
+   */
+  use_regex?: boolean
+
   // FIELDS WITH NO CURRENT EQUIVALENT IN SILLY
   /** not used in prompt engineering */
-  id?: number
+  id?: number | string
   /** if two entries inserted, lower "insertion order" = inserted higher */
   insertion_order: number
 

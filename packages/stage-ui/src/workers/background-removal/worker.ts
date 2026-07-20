@@ -18,6 +18,7 @@ import type {
 } from '../../libs/inference/protocol'
 
 import { AutoModel, AutoProcessor, env, RawImage } from '@huggingface/transformers'
+import { errorMessageFrom } from '@moeru/std'
 
 import { MODEL_IDS, MODEL_NAMES } from '../../libs/inference/constants'
 import { classifyError, isRecoverable } from '../../libs/inference/protocol'
@@ -61,7 +62,7 @@ function sendProgress(requestId: string, percent: number, message?: string): voi
 }
 
 function sendError(requestId: string, error: unknown, phase?: 'load' | 'inference'): void {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = errorMessageFrom(error) ?? String(error)
   const code = classifyError(error, phase)
   const msg: ErrorResponse = {
     type: 'error',

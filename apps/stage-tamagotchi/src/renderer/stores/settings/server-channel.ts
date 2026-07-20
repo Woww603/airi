@@ -2,6 +2,7 @@ import type { ElectronServerChannelConfig } from '../../../shared/eventa'
 
 import { errorMessageFrom } from '@moeru/std'
 import { useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
+import { useSensitiveStorage } from '@proj-airi/stage-shared/composables'
 import { useLocalStorage } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
@@ -14,25 +15,28 @@ import {
 } from '../../../shared/eventa'
 
 export const useServerChannelSettingsStore = defineStore('tamagotchi-server-channel-settings', () => {
-  const tlsConfig = useLocalStorage<{ cert?: string, key?: string, passphrase?: string } | null | undefined>('settings/server-channel/websocket-tls-config', null)
+  const tlsConfig = useSensitiveStorage<{ cert?: string, key?: string, passphrase?: string } | null | undefined>('settings/server-channel/websocket-tls-config', null)
   const hostname = useLocalStorage<string>('settings/server-channel/hostname', '127.0.0.1')
-  const authToken = useLocalStorage<string>('settings/server-channel/auth-token', '')
+  const authToken = useSensitiveStorage<string>('settings/server-channel/auth-token', '')
   const lastApplyError = ref<string | null>(null)
-  const syncingWithServer = ref(false)
+  let authoritativeConfigSnapshot: string | undefined
 
   const getServerChannelConfig = useElectronEventaInvoke(electronGetServerChannelConfig)
   const applyServerChannelConfig = useElectronEventaInvoke(electronApplyServerChannelConfig)
 
   function syncConfigFromServer(config: ElectronServerChannelConfig) {
-    syncingWithServer.value = true
-    tlsConfig.value = config.tlsConfig ?? null
-    if (config.hostname !== undefined) {
-      hostname.value = config.hostname
+    const normalizedConfig: ElectronServerChannelConfig = {
+      tlsConfig: config.tlsConfig ? {} : null,
+      hostname: config.hostname,
+      authToken: config.authToken,
     }
-    if (config.authToken !== undefined) {
-      authToken.value = config.authToken
-    }
-    syncingWithServer.value = false
+
+    // Vue watchers run after this function returns. Record the authoritative
+    // state first so the delayed callback cannot write server values back.
+    authoritativeConfigSnapshot = JSON.stringify(normalizedConfig)
+    tlsConfig.value = normalizedConfig.tlsConfig
+    hostname.value = normalizedConfig.hostname
+    authToken.value = normalizedConfig.authToken
   }
 
   async function refreshServerChannelConfig() {
@@ -42,39 +46,41 @@ export const useServerChannelSettingsStore = defineStore('tamagotchi-server-chan
   }
 
   watch([tlsConfig, hostname, authToken], async ([newTls, newHost, newAuth], [oldTls, oldHost, oldAuth]) => {
-    if (syncingWithServer.value || (JSON.stringify(newTls) === JSON.stringify(oldTls) && newHost === oldHost && newAuth === oldAuth)) {
+    const nextConfig: ElectronServerChannelConfig = {
+      tlsConfig: newTls ? {} : null,
+      hostname: newHost,
+      authToken: newAuth,
+    }
+
+    if (JSON.stringify(nextConfig) === authoritativeConfigSnapshot
+      || (JSON.stringify(newTls) === JSON.stringify(oldTls) && newHost === oldHost && newAuth === oldAuth)) {
       return
     }
 
     lastApplyError.value = null
 
     try {
-      const config = await applyServerChannelConfig({
-        tlsConfig: newTls ? {} : null,
-        hostname: newHost,
-        authToken: newAuth,
-      })
+      const config = await applyServerChannelConfig(nextConfig)
       syncConfigFromServer(config)
     }
     catch (error) {
       const message = errorMessageFrom(error) ?? 'Failed to apply WebSocket security setting'
       lastApplyError.value = message
 
-      syncingWithServer.value = true
-      tlsConfig.value = oldTls
-      hostname.value = oldHost
-      authToken.value = oldAuth
-      syncingWithServer.value = false
+      syncConfigFromServer({
+        tlsConfig: oldTls ? {} : null,
+        hostname: oldHost,
+        authToken: oldAuth,
+      })
 
       toast.error(message)
     }
   })
 
-  void refreshServerChannelConfig()
-
   return {
     lastApplyError,
     refreshServerChannelConfig,
+    syncConfigFromServer,
     tlsConfig,
     hostname,
     authToken,

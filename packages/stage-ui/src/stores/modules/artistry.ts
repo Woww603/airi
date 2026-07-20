@@ -1,4 +1,4 @@
-import { useLocalStorageManualReset } from '@proj-airi/stage-shared/composables'
+import { useLocalStorageManualReset, useSensitiveStorageManualReset } from '@proj-airi/stage-shared/composables'
 import { defineStore } from 'pinia'
 import { computed, isRef, ref, watch } from 'vue'
 
@@ -22,7 +22,7 @@ export const useArtistryStore = defineStore('artistry', () => {
   const globalProvider = useLocalStorageManualReset<string>('artistry-provider', 'none')
   const globalModel = useLocalStorageManualReset<string>('artistry-model', '')
   const globalPromptPrefix = useLocalStorageManualReset<string>('artistry-prompt-prefix', '')
-  const globalProviderOptions = useLocalStorageManualReset<Record<string, any> | undefined>('artistry-provider-options', undefined)
+  const globalProviderOptions = useSensitiveStorageManualReset<Record<string, any> | undefined>('artistry-provider-options', undefined)
 
   // --- Active settings (transient, can be overridden by cards) ---
   const activeProvider = ref(globalProvider.value)
@@ -45,7 +45,7 @@ export const useArtistryStore = defineStore('artistry', () => {
   )
 
   // --- Replicate provider settings ---
-  const replicateApiKey = useLocalStorageManualReset<string>('artistry-replicate-api-key', '')
+  const replicateApiKey = useSensitiveStorageManualReset<string>('artistry-replicate-api-key', '')
   const replicateDefaultModel = useLocalStorageManualReset<string>(
     'artistry-replicate-default-model',
     'black-forest-labs/flux-schnell',
@@ -60,7 +60,7 @@ export const useArtistryStore = defineStore('artistry', () => {
   )
 
   // --- Nano Banana (Google AI Studio) provider settings ---
-  const nanobananaApiKey = useLocalStorageManualReset<string>('artistry-nanobanana-api-key', '')
+  const nanobananaApiKey = useSensitiveStorageManualReset<string>('artistry-nanobanana-api-key', '')
   const nanobananaModel = useLocalStorageManualReset<string>(
     'artistry-nanobanana-model',
     'gemini-3.1-flash-image-preview',

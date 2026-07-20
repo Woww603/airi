@@ -1,4 +1,4 @@
-import type { ManifestV1, PluginHost } from '@proj-airi/plugin-sdk/plugin-host'
+import type { ManifestV1, PluginHost, PluginRuntimeSessionFactory } from '@proj-airi/plugin-sdk/plugin-host'
 
 import type {
   WidgetsAddPayload,
@@ -62,6 +62,8 @@ export interface PluginHostGameletWidgetsManager {
  */
 export interface SetupPluginHostOptions {
   widgetsManager: PluginHostGameletWidgetsManager
+  /** Explicit runtime boundary used for plugin execution. Desktop production injects the Chromium sandbox runtime. */
+  runtimeSessionFactory: PluginRuntimeSessionFactory
 }
 
 /**

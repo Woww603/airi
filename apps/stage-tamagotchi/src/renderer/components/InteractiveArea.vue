@@ -4,7 +4,7 @@ import type { ChatHistoryItem } from '@proj-airi/stage-ui/types/chat'
 
 import { errorMessageFrom } from '@moeru/std'
 import { useStopSpeakingButton } from '@proj-airi/stage-layouts/composables/useStopSpeakingButton'
-import { ChatHistory, JournalPreviewModal } from '@proj-airi/stage-ui/components'
+import { ChatHistory, ChatSessionPromptControls, JournalPreviewModal } from '@proj-airi/stage-ui/components'
 import { useBackgroundStore } from '@proj-airi/stage-ui/stores/background'
 import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
@@ -211,6 +211,33 @@ async function handleRetryMessage(index: number) {
     index,
   })
 }
+
+async function handleEditMessage(payload: { message: ChatHistoryItem, index: number, content: string }) {
+  await chatSyncStore.requestEditMessage({
+    content: payload.content,
+    index: payload.index,
+    messageId: payload.message.id,
+    sessionId: chatSession.activeSessionId,
+  })
+}
+
+async function handleSetMessageExcluded(payload: { message: ChatHistoryItem, index: number, excluded: boolean }) {
+  await chatSyncStore.requestSetMessageExcluded({
+    excluded: payload.excluded,
+    index: payload.index,
+    messageId: payload.message.id,
+    sessionId: chatSession.activeSessionId,
+  })
+}
+
+async function handleSelectResponseAlternative(payload: { message: ChatHistoryItem, index: number, alternativeIndex: number }) {
+  await chatSyncStore.requestSelectResponseAlternative({
+    alternativeIndex: payload.alternativeIndex,
+    index: payload.index,
+    messageId: payload.message.id,
+    sessionId: chatSession.activeSessionId,
+  })
+}
 </script>
 
 <template>
@@ -222,9 +249,14 @@ async function handleRetryMessage(index: number) {
         :streaming-message="streamingMessage"
         :tool-call-renderers="toolCallRenderers"
         @delete-message="handleDeleteMessage($event.index)"
+        @edit-message="handleEditMessage"
         @retry-message="handleRetryMessage($event.index)"
+        @select-response-alternative="handleSelectResponseAlternative"
+        @set-message-excluded="handleSetMessageExcluded"
       />
     </div>
+
+    <ChatSessionPromptControls />
 
     <!-- Journal Preview Chips -->
     <div v-if="latestImageEntries.length > 0" class="flex gap-2 overflow-x-auto px-2 py-1 scrollbar-none">

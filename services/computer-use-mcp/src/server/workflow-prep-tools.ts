@@ -3,6 +3,8 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { ExecutePrepTool } from '../workflows/engine'
 import type { ComputerUseServerRuntime } from './runtime'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { captureAXTree, formatAXSnapshotAsText } from '../accessibility'
 import { enumerateDisplays, formatDisplaySummary } from '../display'
 import { destroyPtySession, readPtyScreen, writeToPty } from '../terminal/pty-runner'
@@ -355,7 +357,7 @@ export function createWorkflowPrepToolExecutor(runtime: ComputerUseServerRuntime
 }
 
 function prepToolErrorResult(label: string, error: unknown): CallToolResult {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = errorMessageFrom(error) ?? String(error)
 
   return {
     isError: true,

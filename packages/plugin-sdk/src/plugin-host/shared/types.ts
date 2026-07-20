@@ -8,6 +8,8 @@ import type {
   PluginIdentity as ProtocolPluginIdentity,
 } from '@proj-airi/plugin-protocol/types'
 
+import type { ChannelHost } from '../../channels/shared'
+import type { Plugin } from '../../plugin/shared'
 import type { PluginTransport } from '../transports'
 import type { KitDescriptor } from './kits'
 
@@ -445,6 +447,35 @@ export interface PluginLoadOptions {
   runtime?: PluginRuntime
 }
 
+/** Runtime resources allocated for one isolated plugin session. */
+export interface PluginRuntimeSession {
+  /** Eventa control plane shared by the host and this plugin runtime. */
+  hostChannel: ChannelHost
+  /** Loads the plugin hooks inside the runtime's execution boundary. */
+  loadPlugin: () => Promise<Plugin>
+  /** Releases runtime resources and aborts pending transport work. */
+  dispose: (reason?: unknown) => void
+}
+
+/** Stable inputs used to create one plugin runtime session. */
+export interface PluginRuntimeSessionFactoryContext {
+  /** Host-generated session identifier used to scope transport resources. */
+  sessionId: string
+  /** Validated manifest selected for this session. */
+  manifest: ManifestV1
+  /** Resolved runtime selected by the host. */
+  runtime: PluginRuntime
+  /** Transport requested for the runtime control plane. */
+  transport: PluginTransport
+  /** Resolved load options, including the session working directory. */
+  loadOptions: Required<PluginLoadOptions>
+}
+
+/** Creates the execution and transport boundary for one plugin session. */
+export type PluginRuntimeSessionFactory = (
+  context: PluginRuntimeSessionFactoryContext,
+) => Promise<PluginRuntimeSession>
+
 /**
  * Configures one `PluginHost` instance.
  *
@@ -479,6 +510,8 @@ export interface PluginHostOptions {
   }) => ModulePermissionGrant | Promise<ModulePermissionGrant>
   /** Installable host features that can extend session APIs and register host behavior. @default [] */
   contributions?: PluginHostContribution[]
+  /** Runtime boundary used to load plugin code and create its Eventa transport. @default local filesystem runtime */
+  runtimeSessionFactory?: PluginRuntimeSessionFactory
 }
 
 /**

@@ -49,10 +49,12 @@ export async function loadSpineModelPreview(file: File): Promise<string | undefi
 
     return await new Promise<string | undefined>((resolve) => {
       let resolved = false
+      let spineCanvas: import('@esotericsoftware/spine-webgl').SpineCanvas | undefined
       const finish = (value: string | undefined) => {
         if (resolved)
           return
         resolved = true
+        spineCanvas?.dispose()
         resolve(value)
       }
 
@@ -131,11 +133,15 @@ export async function loadSpineModelPreview(file: File): Promise<string | undefi
           config: { app: import('@esotericsoftware/spine-webgl').SpineCanvasApp, pathPrefix?: string, webglConfig?: WebGLContextAttributes },
         ) => import('@esotericsoftware/spine-webgl').SpineCanvas
 
-        new SpineCanvasCtor(canvas!, {
+        spineCanvas = new SpineCanvasCtor(canvas!, {
           app,
           pathPrefix: '',
           webglConfig: { alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true },
         })
+        // Asset loading can fail synchronously during construction, before the
+        // instance is assigned. Dispose it here if that path already resolved.
+        if (resolved)
+          spineCanvas.dispose()
       }
       catch (err) {
         console.error('[Spine] Preview generation failed:', err)

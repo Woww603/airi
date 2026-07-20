@@ -1,24 +1,37 @@
 #!/usr/bin/env tsx
 
-import process, { env, exit } from 'node:process'
+import process, { env } from 'node:process'
+
+import { useLogg } from '@guiiai/logg'
 
 import { createServer } from '../server'
+import { ServerProcessLifecycle } from './processLifecycle'
 
-const server = createServer({
-  port: env.PORT ? Number.parseInt(env.PORT) : 6121,
-})
+/**
+ * Runs the standalone AIRI server process with one signal owner.
+ *
+ * Call stack:
+ *
+ * main
+ *   -> {@link ServerProcessLifecycle.start}
+ *     -> createServer().start()
+ *   -> SIGINT / SIGTERM
+ *     -> {@link ServerProcessLifecycle.shutdown}
+ *       -> createServer().stop()
+ */
+async function main() {
+  const log = useLogg('@proj-airi/server-runtime/cli')
+  const server = createServer({
+    port: env.PORT ? Number.parseInt(env.PORT) : 6121,
+  })
+  const lifecycle = new ServerProcessLifecycle(server, process, {
+    onError: error => log.withError(error).error('server process shutdown failed'),
+  })
 
-let stopping = false
-
-async function shutdown() {
-  if (stopping)
-    return
-  stopping = true
-  await server.stop()
-  exit(0)
+  await lifecycle.start()
 }
 
-process.on('SIGINT', shutdown)
-process.on('SIGTERM', shutdown)
-
-server.start()
+void main().catch((error) => {
+  useLogg('@proj-airi/server-runtime/cli').withError(error).error('server process failed to start')
+  process.exitCode = 1
+})

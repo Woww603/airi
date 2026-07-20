@@ -17,6 +17,8 @@ import { errorMessageFrom, sleep } from '@moeru/std'
 import { isTerminalAuthenticationServerErrorMessage, parseServerErrorMessage } from '@proj-airi/server-shared'
 import { MessageHeartbeat, MessageHeartbeatKind } from '@proj-airi/server-shared/types'
 
+import { createRedactedObserverEvent } from './observer'
+
 export type ClientStatus
   = | 'idle'
     | 'connecting'
@@ -37,6 +39,17 @@ export interface ClientHeartbeatOptions {
 export interface ClientStateChangeContext {
   previousStatus: ClientStatus
   status: ClientStatus
+}
+
+/** Transport direction associated with a diagnostic observer callback. */
+export type ClientObserverDirection = 'incoming' | 'outgoing'
+
+/** Fixed diagnostic emitted when an observer callback fails. */
+export interface ClientObserverFailureContext {
+  /** Payload-free failure category. */
+  category: 'observer-callback-failed'
+  /** Transport direction of the diagnostic observer. */
+  direction: ClientObserverDirection
 }
 
 export interface ConnectOptions {
@@ -66,8 +79,12 @@ export interface ClientOptions<C = undefined> {
   onReady?: () => void
   onStateChange?: (context: ClientStateChangeContext) => void
 
-  onAnyMessage?: (data: WebSocketEvent<C>) => void
-  onAnySend?: (data: WebSocketEvent<C>) => void
+  /** Receives a deeply detached, redacted copy of every parsed incoming event. */
+  onAnyMessage?: (data: WebSocketEvent<C>) => void | Promise<void>
+  /** Receives a deeply detached, redacted copy of every outgoing event. */
+  onAnySend?: (data: WebSocketEvent<C>) => void | Promise<void>
+  /** Receives a fixed diagnostic without the callback error or event payload. */
+  onObserverError?: (context: ClientObserverFailureContext) => void
 }
 
 interface ConnectionAttempt {
@@ -113,6 +130,7 @@ function normalizeHeartbeatOptions(heartbeat?: ClientHeartbeatOptions): Required
 export class Client<C = undefined> {
   private websocket?: WebSocketLike
   private shouldClose = false
+  private automaticConnectTask?: Promise<void>
   private connectTask?: Promise<void>
   private heartbeatTimer?: ReturnType<typeof setInterval>
   private lastPingAt = 0
@@ -152,6 +170,7 @@ export class Client<C = undefined> {
       connectTimeoutMs: 15_000,
       onAnyMessage: () => {},
       onAnySend: () => {},
+      onObserverError: context => console.warn('WebSocket observer callback failed', context),
       possibleEvents: [],
       dependencies: [],
       configSchema: undefined,
@@ -172,7 +191,7 @@ export class Client<C = undefined> {
     this.websocketConstructor = websocketConstructor ?? (NativeWebSocket as unknown as WebSocketLikeConstructor)
 
     if (this.opts.autoConnect) {
-      void this.connect()
+      this.startConnectInBackground()
     }
   }
 
@@ -271,7 +290,7 @@ export class Client<C = undefined> {
     }
 
     const payload = this.createPayload(data)
-    this.opts.onAnySend?.(payload)
+    this.notifyObserver('outgoing', this.opts.onAnySend, payload)
     this.websocket.send(superjson.stringify(payload))
 
     return true
@@ -307,6 +326,21 @@ export class Client<C = undefined> {
     }
 
     this.transitionTo('closed')
+  }
+
+  private startConnectInBackground() {
+    const task = this.connect()
+    this.automaticConnectTask = task
+
+    // runConnectLoop reports transport failures through onError/lastError and
+    // terminal state; close reports lifecycle cancellation through `closed`.
+    // This exact task owner only retains and settles the intentionally internal
+    // Promise so those already-observable failures cannot escape to the process.
+    const release = () => {
+      if (this.automaticConnectTask === task)
+        this.automaticConnectTask = undefined
+    }
+    void task.then(release, release)
   }
 
   private async runConnectLoop() {
@@ -364,7 +398,7 @@ export class Client<C = undefined> {
     const deferred = createDeferredPromise()
     const attempt: ConnectionAttempt = {
       announced: false,
-      authenticated: !this.opts.token,
+      authenticated: false,
       promise: deferred.promise,
       reject: deferred.reject,
       resolve: deferred.resolve,
@@ -434,7 +468,7 @@ export class Client<C = undefined> {
       if (wasReady && this.opts.autoReconnect) {
         this.pendingReconnect = true
         this.transitionTo('idle')
-        void this.connect()
+        this.startConnectInBackground()
         return
       }
 
@@ -449,17 +483,8 @@ export class Client<C = undefined> {
       }
 
       this.startHeartbeat()
-
-      if (this.opts.token) {
-        attempt.authenticated = false
-        this.transitionTo('authenticating')
-        this.tryAuthenticate()
-      }
-      else {
-        attempt.authenticated = true
-        this.transitionTo('announcing')
-        this.tryAnnounce()
-      }
+      this.transitionTo('authenticating')
+      this.tryAuthenticate()
     }
 
     return attempt.promise
@@ -598,13 +623,15 @@ export class Client<C = undefined> {
   }
 
   private tryAuthenticate() {
-    if (!this.opts.token) {
-      return
-    }
-
     this.sendOrThrow({
       type: 'module:authenticate',
-      data: { token: this.opts.token },
+      data: {
+        token: this.opts.token ?? '',
+        module: {
+          name: this.opts.name,
+          identity: this.identity,
+        },
+      },
     })
   }
 
@@ -613,7 +640,7 @@ export class Client<C = undefined> {
 
     try {
       const data = this.parseMessage(event.data as string)
-      this.opts.onAnyMessage?.(data)
+      this.notifyObserver('incoming', this.opts.onAnyMessage, data)
 
       await this.handleControlMessage(data)
       await this.dispatchMessage(data)
@@ -625,6 +652,41 @@ export class Client<C = undefined> {
       if (this.connectionAttempt && this.status !== 'ready') {
         this.handleSocketFailure(normalizedError)
       }
+    }
+  }
+
+  private notifyObserver(
+    direction: ClientObserverDirection,
+    observer: ((data: WebSocketEvent<C>) => void | Promise<void>) | undefined,
+    event: WebSocketEvent<C>,
+  ) {
+    if (!observer)
+      return
+
+    try {
+      void Promise.resolve(observer(createRedactedObserverEvent(event))).catch(() => {
+        this.reportObserverFailure(direction)
+      })
+    }
+    catch {
+      this.reportObserverFailure(direction)
+    }
+  }
+
+  private reportObserverFailure(direction: ClientObserverDirection) {
+    try {
+      this.opts.onObserverError({
+        category: 'observer-callback-failed',
+        direction,
+      })
+    }
+    catch {
+      // A diagnostic callback must never alter transport state. The fallback is
+      // deliberately fixed and contains neither the observed event nor error.
+      console.warn('WebSocket observer failure reporter failed', {
+        category: 'observer-failure-reporter-failed',
+        direction,
+      })
     }
   }
 
@@ -896,6 +958,6 @@ export class Client<C = undefined> {
     }
 
     this.transitionTo('idle')
-    void this.connect()
+    this.startConnectInBackground()
   }
 }

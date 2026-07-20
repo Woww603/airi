@@ -12,6 +12,8 @@ import type {
   WindowObservation,
 } from '../types'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { RemoteRunnerClient } from '../runner/client'
 import { writeScreenshotArtifact } from '../utils/screenshot'
 
@@ -45,7 +47,7 @@ export function createLinuxX11Executor(config: ComputerUseConfig, options: Linux
         return await client.getForegroundContext()
       }
       catch (error) {
-        return unavailableContext(error instanceof Error ? error.message : String(error))
+        return unavailableContext(errorMessageFrom(error) ?? String(error))
       }
     },
     getDisplayInfo: () => client.getDisplayInfo(),

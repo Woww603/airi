@@ -32,14 +32,19 @@ import { chatScrollContainerKey } from '../../constants'
 
 const props = withDefaults(defineProps<{
   canCopy?: boolean
+  canEdit?: boolean
   canRetry?: boolean
+  canToggleExclusion?: boolean
   canDelete?: boolean
+  excludedFromPrompt?: boolean
   copyText?: string
   menuLabel?: string
   placement?: 'left' | 'right'
 }>(), {
   canCopy: true,
+  canEdit: false,
   canRetry: false,
+  canToggleExclusion: false,
   canDelete: true,
   copyText: '',
   menuLabel: 'Message actions',
@@ -48,7 +53,9 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'copy'): void
+  (e: 'edit'): void
   (e: 'retry'): void
+  (e: 'toggleExclusion'): void
   (e: 'delete'): void
 }>()
 defineSlots<{
@@ -91,8 +98,11 @@ const copyFeedbackActive = shallowRef(false)
 
 const menuItems = computed(() => createChatActionMenuItems({
   canCopy: props.canCopy && props.copyText.trim().length > 0,
+  canEdit: props.canEdit,
   canRetry: props.canRetry,
+  canToggleExclusion: props.canToggleExclusion,
   canDelete: props.canDelete,
+  excludedFromPrompt: props.excludedFromPrompt,
   retryLabel: t('stage.chat.actions.retry'),
 }))
 const triggerState = computed(() => createChatActionMenuTriggerState({
@@ -272,6 +282,16 @@ async function handleAction(action: ChatActionMenuAction) {
 
   if (action === 'retry') {
     emit('retry')
+    return
+  }
+
+  if (action === 'edit') {
+    emit('edit')
+    return
+  }
+
+  if (action === 'toggle-exclusion') {
+    emit('toggleExclusion')
     return
   }
 

@@ -2,6 +2,16 @@
 import { Section } from '@proj-airi/stage-ui/components'
 import { useAiriCardStore, useBackgroundStore } from '@proj-airi/stage-ui/stores'
 import { Button, Callout } from '@proj-airi/ui'
+import {
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogOverlay,
+  AlertDialogPortal,
+  AlertDialogRoot,
+  AlertDialogTitle,
+} from 'reka-ui'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -10,6 +20,7 @@ const backgroundStore = useBackgroundStore()
 const cardStore = useAiriCardStore()
 
 const fileInputRef = ref<HTMLInputElement>()
+const pendingBackgroundId = ref<string>()
 
 const sceneEntries = computed(() => {
   return backgroundStore.availableBackgrounds
@@ -50,10 +61,21 @@ function setAsBackground(id: string) {
   activeBackgroundId.value = id
 }
 
-function removeBackground(id: string) {
-  if (confirm(t('settings.pages.scene.gallery.delete_confirm', 'Are you sure you want to delete this background?'))) {
-    backgroundStore.removeBackground(id)
-  }
+function requestRemoveBackground(id: string) {
+  pendingBackgroundId.value = id
+}
+
+async function confirmRemoveBackground() {
+  if (!pendingBackgroundId.value)
+    return
+
+  await backgroundStore.removeBackground(pendingBackgroundId.value)
+  pendingBackgroundId.value = undefined
+}
+
+function handleDeleteDialogOpenChange(open: boolean) {
+  if (!open)
+    pendingBackgroundId.value = undefined
 }
 
 function clearDefault() {
@@ -167,7 +189,7 @@ function clearDefault() {
                 size="sm"
                 variant="secondary"
                 :class="['!bg-red-500 hover:!bg-red-600 !text-white']"
-                @click="removeBackground(bg.id)"
+                @click="requestRemoveBackground(bg.id)"
               >
                 <div :class="['i-solar:trash-bin-trash-bold-duotone']" />
               </Button>
@@ -192,6 +214,37 @@ function clearDefault() {
       <div v-html="t('settings.pages.scene.tip.description')" />
     </Callout>
   </div>
+
+  <AlertDialogRoot :open="pendingBackgroundId != null" @update:open="handleDeleteDialogOpenChange">
+    <AlertDialogPortal>
+      <AlertDialogOverlay class="fixed inset-0 z-100 bg-black/50 data-[state=closed]:animate-fadeOut data-[state=open]:animate-fadeIn" />
+      <AlertDialogContent
+        :class="[
+          'fixed left-1/2 top-1/2 z-101 max-w-md w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2',
+          'rounded-xl bg-white p-6 shadow-xl dark:bg-neutral-900',
+        ]"
+      >
+        <AlertDialogTitle class="mb-3 text-lg font-medium">
+          {{ t('settings.pages.scene.gallery.delete') }}
+        </AlertDialogTitle>
+        <AlertDialogDescription class="mb-6 text-sm text-neutral-600 dark:text-neutral-300">
+          {{ t('settings.pages.scene.gallery.delete_confirm') }}
+        </AlertDialogDescription>
+        <div class="flex justify-end gap-2">
+          <AlertDialogCancel as-child>
+            <Button variant="secondary">
+              {{ t('settings.pages.card.cancel') }}
+            </Button>
+          </AlertDialogCancel>
+          <AlertDialogAction as-child>
+            <Button variant="danger" @click="confirmRemoveBackground">
+              {{ t('settings.pages.scene.gallery.delete') }}
+            </Button>
+          </AlertDialogAction>
+        </div>
+      </AlertDialogContent>
+    </AlertDialogPortal>
+  </AlertDialogRoot>
 
   <!-- Background Icon Decoration -->
   <div

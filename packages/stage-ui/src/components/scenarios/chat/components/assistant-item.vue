@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import type { ChatAssistantMessage, ChatHistoryItem, ChatSlices, ChatSlicesText, ChatSlicesToolCallResult } from '../../../../types/chat'
+import type { ChatHistoryItem, ChatSlices, ChatSlicesText, ChatSlicesToolCallResult } from '../../../../types/chat'
 import type { ChatToolCallRendererRegistry } from './tool-call-renderer'
 
 import { isStageCapacitor, isStageWeb } from '@proj-airi/stage-shared'
-import { computed } from 'vue'
+import { Button } from '@proj-airi/ui'
+import { computed, shallowRef } from 'vue'
 
+import MessageTextEditor from './messageTextEditor.vue'
 import ChatResponsePart from './response-part.vue'
 import ChatToolCallBlock from './tool-call-block.vue'
 
@@ -14,7 +16,7 @@ import { ChatActionMenu } from './action-menu'
 import { createToolCallResultLookup, resolveToolCallBlockState } from './tool-call-results'
 
 const props = withDefaults(defineProps<{
-  message: ChatAssistantMessage
+  message: Extract<ChatHistoryItem, { role: 'assistant' }>
   label: string
   showPlaceholder?: boolean
   variant?: 'desktop' | 'mobile'
@@ -28,6 +30,10 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'copy'): void
   (e: 'delete'): void
+  (e: 'edit', content: string): void
+  (e: 'retry'): void
+  (e: 'selectAlternative', alternativeIndex: number): void
+  (e: 'toggleExclusion'): void
 }>()
 
 const resolvedSlices = computed<ChatSlices[]>(() => {
@@ -78,14 +84,39 @@ const boxClasses = computed(() => [
   props.variant === 'mobile' ? 'px-2 py-2 text-sm bg-primary-50/90 dark:bg-primary-950/90' : 'px-3 py-3 bg-primary-50/80 dark:bg-primary-950/80',
 ])
 const copyText = computed(() => getChatHistoryItemCopyText(props.message as ChatHistoryItem))
+const editing = shallowRef(false)
+const editDraft = shallowRef('')
+const alternativeCount = computed(() => props.message.responseAlternatives?.length ?? 0)
+const activeAlternativeIndex = computed(() => props.message.activeResponseAlternative ?? 0)
+
+function startEditing() {
+  editDraft.value = copyText.value
+  editing.value = true
+}
+
+function cancelEditing() {
+  editing.value = false
+}
+
+function saveEdit(content: string) {
+  emit('edit', content)
+  editing.value = false
+}
 </script>
 
 <template>
   <div flex :class="containerClass" class="ph-no-capture">
     <ChatActionMenu
       :copy-text="copyText"
+      :can-edit="!showPlaceholder"
+      :can-retry="!showPlaceholder"
+      :can-toggle-exclusion="!showPlaceholder"
       :can-delete="!showPlaceholder"
+      :excluded-from-prompt="message.excludedFromPrompt"
       @copy="emit('copy')"
+      @edit="startEditing"
+      @retry="emit('retry')"
+      @toggle-exclusion="emit('toggleExclusion')"
       @delete="emit('delete')"
     >
       <template #default="{ setMeasuredElement }">
@@ -95,6 +126,7 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
           min-w-20 gap-2 rounded-xl h="unset <sm:fit"
           :class="[
             boxClasses,
+            message.excludedFromPrompt ? 'opacity-60 ring-1 ring-amber-400/50' : '',
             (isStageWeb() || isStageCapacitor()) && props.variant === 'mobile' ? 'select-none sm:select-auto' : '',
           ]"
         >
@@ -105,8 +137,17 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
           />
           <div class="<sm:hidden">
             <span text-sm text="black/60 dark:white/65" font-normal>{{ label }}</span>
+            <span v-if="message.excludedFromPrompt" :class="['ml-2', 'text-xs', 'text-amber-600', 'dark:text-amber-300']">
+              excluded from prompt
+            </span>
           </div>
-          <div v-if="resolvedSlices.length > 0" class="flex flex-col gap-2 break-words" text="primary-700 dark:primary-100">
+          <MessageTextEditor
+            v-if="editing"
+            v-model="editDraft"
+            @cancel="cancelEditing"
+            @save="saveEdit"
+          />
+          <div v-else-if="resolvedSlices.length > 0" class="flex flex-col gap-2 break-words" text="primary-700 dark:primary-100">
             <template v-for="(slice, sliceIndex) in resolvedSlices" :key="sliceIndex">
               <component
                 :is="getToolCallRenderer(slice)"
@@ -123,6 +164,29 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
             </template>
           </div>
           <div v-else-if="showLoader" i-eos-icons:three-dots-loading />
+          <div v-if="alternativeCount > 1 && !editing" :class="['flex', 'items-center', 'justify-center', 'gap-2', 'pt-1']">
+            <Button
+              aria-label="Previous response"
+              :disabled="activeAlternativeIndex <= 0"
+              icon="i-solar:alt-arrow-left-bold"
+              shape="square"
+              size="sm"
+              variant="ghost"
+              @click="emit('selectAlternative', activeAlternativeIndex - 1)"
+            />
+            <span :class="['text-xs', 'text-primary-500', 'dark:text-primary-300']">
+              {{ activeAlternativeIndex + 1 }} / {{ alternativeCount }}
+            </span>
+            <Button
+              aria-label="Next response"
+              :disabled="activeAlternativeIndex >= alternativeCount - 1"
+              icon="i-solar:alt-arrow-right-bold"
+              shape="square"
+              size="sm"
+              variant="ghost"
+              @click="emit('selectAlternative', activeAlternativeIndex + 1)"
+            />
+          </div>
         </div>
       </template>
     </ChatActionMenu>

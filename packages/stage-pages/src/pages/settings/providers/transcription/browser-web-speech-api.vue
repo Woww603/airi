@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { RemovableRef } from '@vueuse/core'
 
+import { errorMessageFrom } from '@moeru/std'
 import {
   Alert,
   ErrorContainer,
@@ -230,7 +231,7 @@ async function startSTTTest() {
     isTranscribing.value = false // Not actively transcribing yet, just listening
   }
   catch (err) {
-    testTranscriptionError.value = err instanceof Error ? err.message : String(err)
+    testTranscriptionError.value = errorMessageFrom(err) ?? String(err)
     testStatusMessage.value = `Error: ${testTranscriptionError.value}`
     isTranscribing.value = false
     isTestingSTT.value = false

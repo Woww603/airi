@@ -8,7 +8,7 @@ import fs from 'node:fs/promises'
 import { Buffer } from 'node:buffer'
 import { fileURLToPath } from 'node:url'
 
-import { withRetry } from '@moeru/std'
+import { errorMessageFrom, withRetry } from '@moeru/std'
 import { attemptAsync } from 'es-toolkit'
 import { ofetch } from 'ofetch'
 
@@ -62,7 +62,7 @@ async function downloadAsset(key: string, url: string, outputPath: string) {
     }
   }, {
     onError: (error) => {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = errorMessageFrom(error) ?? String(error)
       console.warn(`Failed to download MediaPipe vision task asset for ${key} (attempt ${attempt}): ${message}`)
     },
   })

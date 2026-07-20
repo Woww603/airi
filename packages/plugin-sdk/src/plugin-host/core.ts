@@ -1,5 +1,6 @@
 import type { ActorRefFrom } from 'xstate'
 
+import type { ChannelHost } from '../channels/shared'
 import type { createApis } from '../plugin/apis/client'
 import type { AnnounceBindingInput, UpdateBindingInput } from '../plugin/apis/client/bindings'
 import type { RegisterToolInput, RegisterToolsetPromptInput } from '../plugin/apis/client/tools'
@@ -23,6 +24,8 @@ import type {
   PluginHostSessionContext,
   PluginLoadOptions,
   PluginRuntime,
+  PluginRuntimeSession,
+  PluginRuntimeSessionFactory,
   PluginSessionApiFactory,
   PluginSessionPhase,
   PluginStartOptions,
@@ -82,8 +85,7 @@ import {
   protocolListProvidersEventName,
   protocolProviders,
 } from '../plugin/apis/protocol/resources/providers'
-import { createPluginContext } from './runtimes/node'
-import { FileSystemLoader } from './runtimes/node/loaders'
+import { createFileSystemPluginRuntimeSessionFactory } from './runtimes/node/session'
 import {
   BindingsRegistryService,
   DependencyService,
@@ -566,7 +568,7 @@ export interface PluginHostSession {
   /** Host-owned Eventa channels injected into the plugin context. */
   channels: {
     /** Control-plane Eventa context used for lifecycle and RPC traffic. */
-    host: ReturnType<typeof createPluginContext>
+    host: ChannelHost
   }
   /** Bound plugin SDK APIs exposed to plugin code. */
   apis: PluginHostSessionApis
@@ -662,7 +664,8 @@ function cloneBindingRecord<C extends HostDataRecord>(module: BindingRecord<C>):
  * - Tests or applications need one place to load, initialize, start, stop, and query plugin sessions
  *
  * Expects:
- * - Plugins are loaded from manifest entrypoints through {@link FileSystemLoader}
+ * - The default runtime loads manifest entrypoints through {@link FileSystemLoader}
+ * - Applications running untrusted plugins inject a process-isolated runtime session factory
  * - Each session gets its own Eventa context, permission scope, and lifecycle actor
  *
  * Returns:
@@ -682,8 +685,9 @@ function cloneBindingRecord<C extends HostDataRecord>(module: BindingRecord<C>):
  *     -> {@link PluginHost.init}
  */
 export class PluginHost {
-  private readonly loader: FileSystemLoader
   private readonly sessionService = new PluginSessionService<PluginHostSession>()
+  private readonly runtimeSessionFactory: PluginRuntimeSessionFactory
+  private readonly runtimeSessions = new Map<string, PluginRuntimeSession>()
   private readonly runtime: PluginRuntime
   private readonly transport: PluginTransport
   private readonly protocolVersion: string
@@ -708,7 +712,7 @@ export class PluginHost {
   private readonly installContext: PluginHostInstallContext
 
   constructor(options: PluginHostOptions = {}) {
-    this.loader = new FileSystemLoader()
+    this.runtimeSessionFactory = options.runtimeSessionFactory ?? createFileSystemPluginRuntimeSessionFactory()
     this.runtime = options.runtime ?? 'electron'
     this.transport = options.transport ?? { kind: 'in-memory' }
     this.protocolVersion = options.protocolVersion ?? 'v1'
@@ -817,7 +821,7 @@ export class PluginHost {
 
   private createSessionApis(
     session: PluginHostSession,
-    hostChannel: ReturnType<typeof createPluginContext>,
+    hostChannel: ChannelHost,
   ): PluginHostSessionApis {
     const baseApis = createBoundApis(hostChannel, {
       kits: {
@@ -931,6 +935,15 @@ export class PluginHost {
 
     session.lifecycle.stop()
     this.sessionService.remove(session.id)
+
+    const runtimeSession = this.runtimeSessions.get(session.id)
+    this.runtimeSessions.delete(session.id)
+    try {
+      runtimeSession?.dispose(new Error(`Plugin session stopped: ${session.id}`))
+    }
+    catch (error) {
+      lifecycleHookError ??= error
+    }
 
     return lifecycleHookError
   }
@@ -1206,22 +1219,26 @@ export class PluginHost {
     const sessionCwd = options.cwd ?? cwd() // Explicitly assign the default CWD.
     const transport = this.transport
 
-    // TODO: implement other transports and runtime bindings.
-    // alpha scope guard:
-    // we intentionally fail fast for non in-memory transports while iterating on lifecycle design.
-    if (transport.kind !== 'in-memory') {
-      throw new Error(`Only in-memory transport is currently supported by PluginHost alpha. Got: ${transport.kind}`)
-    }
-
     // Build per-session identity.
     const sessionIdentity = this.sessionService.nextSessionIdentity(manifest.name)
     const sessionIndex = sessionIdentity.index
     const id = sessionIdentity.sessionId
     const identity = sessionIdentity.moduleIdentity
 
-    // Step 1 (connect/control-plane prep): create an isolated Eventa context per plugin.
-    // All invokes/events for this plugin go through this context to prevent cross-talk.
-    const hostChannel = createPluginContext(transport)
+    // Step 1 (connect/control-plane prep): create the application-selected runtime boundary.
+    // Desktop callers inject a sandboxed renderer runtime so this process never imports plugin code.
+    const runtimeSession = await this.runtimeSessionFactory({
+      sessionId: id,
+      manifest,
+      runtime,
+      transport,
+      loadOptions: {
+        cwd: sessionCwd,
+        runtime,
+      },
+    })
+    const hostChannel = runtimeSession.hostChannel
+    this.runtimeSessions.set(id, runtimeSession)
     const lifecycle = createActor(pluginLifecycleMachine)
     lifecycle.start()
 
@@ -1302,10 +1319,7 @@ export class PluginHost {
     try {
       // Load plugin module from manifest-selected runtime entrypoint.
       // This is where malformed entrypoints or import errors surface.
-      session.plugin = await this.loader.loadPluginFor(manifest, {
-        cwd: sessionCwd,
-        runtime,
-      })
+      session.plugin = await runtimeSession.loadPlugin()
 
       // Assert lifecycle progression (`loading` -> `loaded`) to keep transition rules explicit.
       // This prevents accidental phase drift if the method evolves later.
@@ -1317,11 +1331,25 @@ export class PluginHost {
       // Load failure is terminal for this session (`loading` -> `failed`).
       // Emit status so Configurator/observers can show deterministic diagnostics.
       markFailedTransition(session)
+      let reason = 'Failed to load plugin.'
+      if (error instanceof Error)
+        reason = error.message
       session.channels.host.emit(moduleStatus, {
         identity: session.identity,
         phase: 'failed',
-        reason: error instanceof Error ? error.message : 'Failed to load plugin.',
+        reason,
       })
+
+      this.runtimeSessions.delete(id)
+      try {
+        runtimeSession.dispose(error)
+      }
+      catch (disposeError) {
+        throw new AggregateError(
+          [error, disposeError],
+          `Plugin load failed and runtime cleanup failed: ${manifest.name}`,
+        )
+      }
 
       throw error
     }
@@ -1346,6 +1374,11 @@ export class PluginHost {
       assertTransition(session, 'authenticating')
       session.channels.host.emit(moduleAuthenticate, {
         token: `${session.id}:${session.identity.id}`,
+        module: {
+          name: session.manifest.name,
+          index: session.index,
+          identity: session.identity,
+        },
       })
 
       // Mark local lifecycle after authentication handshake.
@@ -1564,11 +1597,14 @@ export class PluginHost {
     catch (error) {
       // Any init failure is normalized into failed phase + status event for observability.
       markFailedTransition(session)
+      let reason = 'Plugin host initialization failed.'
+      if (error instanceof Error)
+        reason = error.message
 
       session.channels.host.emit(moduleStatus, {
         identity: session.identity,
         phase: 'failed',
-        reason: error instanceof Error ? error.message : 'Plugin host initialization failed.',
+        reason,
       })
 
       this.cleanupSession(session)

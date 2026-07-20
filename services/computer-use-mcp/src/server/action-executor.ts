@@ -14,6 +14,8 @@ import type {
 } from '../types'
 import type { ComputerUseServerRuntime } from './runtime'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { normalizeConfiguredAppAction } from '../app-aliases'
 import { decideBrowserTypeAction } from '../browser-action-router'
 import { isBrowserDomActionSupported } from '../browser-dom/capabilities'
@@ -525,7 +527,7 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
               backendResult.focusDisplayPoint = structuredDisplayPoint
             }
             catch (clickError) {
-              const msg = clickError instanceof Error ? clickError.message : String(clickError)
+              const msg = errorMessageFrom(clickError) ?? String(clickError)
               throw new Error(`Preparatory click at (${normalizedAction.input.x}, ${normalizedAction.input.y}) failed before typing: ${msg}`)
             }
           }
@@ -755,7 +757,7 @@ export function createExecuteAction(runtime: ComputerUseServerRuntime): ExecuteA
       })
     }
     catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = errorMessageFrom(error) ?? String(error)
 
       // Update run state with failure info.
       if (runtime.stateManager.hasActiveTask()) {

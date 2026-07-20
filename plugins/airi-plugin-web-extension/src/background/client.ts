@@ -72,7 +72,9 @@ export async function ensureClient(state: ClientState, settings: ExtensionSettin
     autoReconnect: true,
     onError: (error) => {
       state.connected = false
-      state.lastError = error instanceof Error ? error.message : String(error)
+      state.lastError = String(error)
+      if (error instanceof Error)
+        state.lastError = error.message
     },
     onClose: () => {
       state.connected = false
@@ -88,7 +90,9 @@ export async function ensureClient(state: ClientState, settings: ExtensionSettin
   }
   catch (error) {
     state.connected = false
-    state.lastError = error instanceof Error ? error.message : String(error)
+    state.lastError = String(error)
+    if (error instanceof Error)
+      state.lastError = error.message
   }
 }
 

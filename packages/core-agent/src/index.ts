@@ -10,11 +10,18 @@ export {
 } from './messages/context-prompt'
 export type { ContextSnapshot } from './messages/context-prompt'
 export { formatTimePrefix } from './messages/datetime-prefix'
+export { composePromptContributions } from './messages/prompt-contributions'
+export type {
+  PromptContribution,
+  PromptContributionPlacement,
+  PromptContributionStatus,
+} from './messages/prompt-contributions'
 export { createChatHooks } from './runtime/agent-hooks'
 export type {
   ChatOrchestratorLifecycleRecord,
   ChatOrchestratorLLMPort,
   ChatOrchestratorPromptProjection,
+  ChatOrchestratorQueuePolicy,
   ChatOrchestratorRuntime,
   ChatOrchestratorRuntimeDeps,
   ChatOrchestratorRuntimeState,
@@ -22,7 +29,7 @@ export type {
   ChatOrchestratorSessionPort,
   QueuedSendSnapshot,
 } from './runtime/chat-orchestrator-runtime'
-export { createChatOrchestratorRuntime } from './runtime/chat-orchestrator-runtime'
+export { ChatQueueCapacityError, ChatTurnCancelledError, createChatOrchestratorRuntime } from './runtime/chat-orchestrator-runtime'
 export type { ContextHistoryEntry, ContextIngestResult, ContextRegistry } from './runtime/context-registry'
 export { createContextRegistry } from './runtime/context-registry'
 export { useLlmmarkerParser } from './runtime/llm-marker-parser'
@@ -49,12 +56,14 @@ export type {
   ChatAssistantMessage,
   ChatHistoryItem,
   ChatMessage,
+  ChatResponseAlternative,
   ChatSlices,
   ChatSlicesText,
   ChatSlicesToolCall,
   ChatSlicesToolCallResult,
   ChatStreamEvent,
   ChatStreamEventContext,
+  ChatTurnCancellationReason,
   ContextMessage,
   ErrorMessage,
   StreamingAssistantMessage,

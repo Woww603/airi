@@ -18,6 +18,7 @@
     ".": "./src/index.ts",
     "./auth": "./src/auth/index.ts",
     "./beat-sync": "./src/beat-sync/index.ts",
+    "./discord-bridge": "./src/discord-bridge.ts",
     "./global-shortcut": "./src/global-shortcut/index.ts",
     "./godot-stage": "./src/godot-stage/index.ts",
     "./server-channel-qr": "./src/server-channel-qr.ts",

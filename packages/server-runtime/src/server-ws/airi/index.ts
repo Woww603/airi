@@ -67,6 +67,7 @@ export class AiriWebSocketEventFormatError extends Error {
  */
 export function createGateway(input: {
   handler: {
+    upgrade?: (request: Request) => Response | void
     open: (peer: Peer) => void
     message: (peer: Peer, message: { text: () => string }) => void
     error: (peer: Peer, error: unknown) => void

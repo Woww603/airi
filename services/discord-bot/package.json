@@ -14,14 +14,22 @@
     "url": "https://github.com/moeru-ai/airi.git",
     "directory": "services/discord-bot"
   },
+  "exports": {
+    "./adapter": "./src/adapters/airi-adapter.ts",
+    "./standalone-app": "./src/standalone/app-runtime.ts",
+    "./standalone-log": "./src/standalone/rotating-file-log.ts"
+  },
   "scripts": {
     "start": "tsx --env-file=.env --env-file-if-exists=.env.local src/index.ts",
+    "start:standalone": "tsx --env-file=.env --env-file-if-exists=.env.local src/index.ts",
+    "test:run": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@discordjs/voice": "catalog:",
     "@guiiai/logg": "catalog:",
     "@huggingface/transformers": "catalog:",
+    "@moeru/std": "catalog:",
     "@proj-airi/audio": "workspace:^",
     "@proj-airi/server-sdk": "workspace:^",
     "@proj-airi/server-shared": "workspace:^",
@@ -35,6 +43,11 @@
     "libsodium-wrappers": "catalog:",
     "opusscript": "catalog:",
     "tsx": "catalog:",
-    "wavefile": "catalog:"
+    "wavefile": "catalog:",
+    "ws": "catalog:"
+  },
+  "devDependencies": {
+    "@types/ws": "catalog:",
+    "vitest": "catalog:vitest"
   }
 }

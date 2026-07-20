@@ -2,8 +2,8 @@ import type { MessageRole, NewMessagesPayload } from '@proj-airi/server-sdk-shar
 
 import type { ChatSendOutboxEntry } from '../../database/repos/chat-sessions.repo'
 import type { ChatWsClient, CloudChatMapper } from '../../libs/chat-sync'
-import type { ChatHistoryItem } from '../../types/chat'
-import type { ChatSessionMeta, ChatSessionRecord, ChatSessionsExport, ChatSessionsIndex } from '../../types/chat-session'
+import type { ChatHistoryItem, ChatResponseAlternative, ChatSlices } from '../../types/chat'
+import type { ChatSessionMeta, ChatSessionPromptProfile, ChatSessionRecord, ChatSessionsExport, ChatSessionsIndex } from '../../types/chat-session'
 
 import { errorMessageFrom } from '@moeru/std'
 import { cloneDeep } from 'es-toolkit'
@@ -270,6 +270,259 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       ...(sessionMessages.value[sessionId] ?? []),
       message,
     ])
+  }
+
+  /**
+   * Updates session-scoped persona, author note, or editable summary memory.
+   *
+   * Use when:
+   * - Chat UI saves prompt controls without modifying the active character card
+   *
+   * Expects:
+   * - An existing session meta record owned by the current user
+   *
+   * Returns:
+   * - `true` when normalized prompt profile data was scheduled for persistence
+   */
+  function updateSessionPromptProfile(sessionId: string, patch: Partial<ChatSessionPromptProfile>) {
+    const meta = sessionMetas.value[sessionId]
+    if (!meta)
+      return false
+
+    const nextProfile: ChatSessionPromptProfile = {
+      ...meta.promptProfile,
+      ...patch,
+    }
+    if ('authorNote' in patch)
+      nextProfile.authorNote = patch.authorNote?.trim() || undefined
+    if ('userPersona' in patch) {
+      const name = patch.userPersona?.name.trim() ?? ''
+      const description = patch.userPersona?.description.trim() ?? ''
+      nextProfile.userPersona = name || description ? { name, description } : undefined
+    }
+    if ('rollingSummary' in patch) {
+      const content = patch.rollingSummary?.content.trim() ?? ''
+      nextProfile.rollingSummary = content && patch.rollingSummary
+        ? {
+            ...patch.rollingSummary,
+            content,
+            sourceMessageIds: [...new Set(patch.rollingSummary.sourceMessageIds)],
+          }
+        : undefined
+    }
+
+    const nextMeta: ChatSessionMeta = {
+      ...meta,
+      promptProfile: nextProfile,
+    }
+    sessionMetas.value[sessionId] = nextMeta
+    const characterIndex = index.value?.characters[nextMeta.characterId]
+    if (characterIndex)
+      characterIndex.sessions[sessionId] = nextMeta
+    void persistSession(sessionId)
+    return true
+  }
+
+  function getSessionPromptProfile(sessionId: string) {
+    return sessionMetas.value[sessionId]?.promptProfile
+  }
+
+  function resolveMessageIndex(messages: ChatHistoryItem[], target: { messageId?: string, index?: number }) {
+    if (target.messageId)
+      return messages.findIndex(message => message.id === target.messageId)
+    return target.index ?? -1
+  }
+
+  function replaceMessage(
+    target: { sessionId: string, messageId?: string, index?: number },
+    transform: (message: ChatHistoryItem) => ChatHistoryItem | null,
+  ) {
+    const current = sessionMessages.value[target.sessionId] ?? []
+    const messageIndex = resolveMessageIndex(current, target)
+    const message = current[messageIndex]
+    if (!message)
+      return false
+
+    const replacement = transform(message)
+    if (!replacement)
+      return false
+
+    const next = [...current]
+    next[messageIndex] = replacement
+    replaceSessionMessages(target.sessionId, next)
+    return true
+  }
+
+  function replaceUserTextContent(message: Extract<ChatHistoryItem, { role: 'user' }>, content: string) {
+    if (typeof message.content === 'string')
+      return content
+
+    let replacedText = false
+    const parts: typeof message.content = []
+    for (const part of message.content) {
+      if (part.type !== 'text') {
+        parts.push(part)
+        continue
+      }
+      if (replacedText)
+        continue
+      replacedText = true
+      parts.push({ ...part, text: content })
+    }
+    return replacedText ? parts : [{ type: 'text' as const, text: content }, ...parts]
+  }
+
+  function replaceAssistantTextSlices(message: Extract<ChatHistoryItem, { role: 'assistant' }>, content: string) {
+    let replacedText = false
+    const slices: ChatSlices[] = []
+    for (const slice of message.slices) {
+      if (slice.type !== 'text') {
+        slices.push(slice)
+        continue
+      }
+      if (replacedText)
+        continue
+      replacedText = true
+      slices.push({ type: 'text', text: content })
+    }
+    return replacedText ? slices : [...slices, { type: 'text' as const, text: content }]
+  }
+
+  /**
+   * Replaces the editable text of one local chat message.
+   *
+   * Use when:
+   * - A user corrects their own message without dropping image attachments
+   * - An assistant response is manually corrected while retaining tool-call structure
+   *
+   * Expects:
+   * - A user, assistant, or error target resolved by stable id or fallback index
+   *
+   * Returns:
+   * - `true` when a message was edited and scheduled for persistence
+   */
+  function editSessionMessage(target: { sessionId: string, messageId?: string, index?: number, content: string }) {
+    return replaceMessage(target, (message) => {
+      if (message.role === 'user') {
+        return {
+          ...message,
+          content: replaceUserTextContent(message, target.content),
+        }
+      }
+
+      if (message.role === 'assistant') {
+        const slices = replaceAssistantTextSlices(message, target.content)
+        const responseAlternatives = message.responseAlternatives?.map((alternative, index) => {
+          if (index !== message.activeResponseAlternative)
+            return alternative
+          return {
+            ...alternative,
+            content: target.content,
+            slices,
+          }
+        })
+        return {
+          ...message,
+          content: target.content,
+          responseAlternatives,
+          slices,
+        }
+      }
+
+      if (message.role === 'error') {
+        return {
+          ...message,
+          content: target.content,
+        }
+      }
+
+      return null
+    })
+  }
+
+  /**
+   * Changes whether one visible local message participates in future provider prompts.
+   *
+   * Use when:
+   * - A user wants to keep a turn in the transcript but remove its model influence
+   *
+   * Expects:
+   * - A message resolved by stable id or fallback index
+   *
+   * Returns:
+   * - `true` when the exclusion flag was updated
+   */
+  function setSessionMessageExcluded(target: { sessionId: string, messageId?: string, index?: number, excluded: boolean }) {
+    return replaceMessage(target, message => ({
+      ...message,
+      excludedFromPrompt: target.excluded || undefined,
+    }))
+  }
+
+  /**
+   * Attaches complete preserved candidates to one assistant message.
+   *
+   * Use when:
+   * - A retry finishes and the prior response candidates must remain swipeable
+   *
+   * Expects:
+   * - At least one candidate and an assistant target
+   *
+   * Returns:
+   * - `true` when the candidates were attached and the newest candidate selected
+   */
+  function setAssistantResponseAlternatives(target: { sessionId: string, messageId?: string, index?: number, alternatives: ChatResponseAlternative[] }) {
+    if (target.alternatives.length === 0)
+      return false
+
+    return replaceMessage(target, (message) => {
+      if (message.role !== 'assistant')
+        return null
+
+      const activeResponseAlternative = target.alternatives.length - 1
+      const active = target.alternatives[activeResponseAlternative]!
+      return {
+        ...message,
+        activeResponseAlternative,
+        categorization: cloneDeep(active.categorization),
+        content: cloneDeep(active.content),
+        responseAlternatives: cloneDeep(target.alternatives),
+        slices: cloneDeep(active.slices),
+        tool_results: cloneDeep(active.tool_results),
+      }
+    })
+  }
+
+  /**
+   * Selects one preserved assistant response candidate.
+   *
+   * Use when:
+   * - Swipe controls move backward or forward through generated responses
+   *
+   * Expects:
+   * - A valid zero-based alternative index on an assistant message
+   *
+   * Returns:
+   * - `true` when the selected response was projected onto the message
+   */
+  function selectAssistantResponseAlternative(target: { sessionId: string, messageId?: string, index?: number, alternativeIndex: number }) {
+    return replaceMessage(target, (message) => {
+      if (message.role !== 'assistant')
+        return null
+
+      const alternative = message.responseAlternatives?.[target.alternativeIndex]
+      if (!alternative)
+        return null
+
+      return {
+        ...message,
+        activeResponseAlternative: target.alternativeIndex,
+        categorization: cloneDeep(alternative.categorization),
+        content: cloneDeep(alternative.content),
+        slices: cloneDeep(alternative.slices),
+        tool_results: cloneDeep(alternative.tool_results),
+      }
+    })
   }
 
   /**
@@ -1416,6 +1669,12 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     ensureSession,
     setSessionMessages,
     appendSessionMessage,
+    updateSessionPromptProfile,
+    getSessionPromptProfile,
+    editSessionMessage,
+    setSessionMessageExcluded,
+    setAssistantResponseAlternatives,
+    selectAssistantResponseAlternative,
     persistSessionMessages,
     getSessionMessages,
     sessionMessages,

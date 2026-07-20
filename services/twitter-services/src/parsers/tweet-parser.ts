@@ -23,7 +23,7 @@ export class TweetParser {
       const tweets: Tweet[] = []
 
       for (const tweetElement of tweetElements) {
-        const tweet = await this.extractTweetData(page, tweetElement)
+        const tweet = await this.extractTweetData(tweetElement)
         if (tweet) {
           tweets.push(tweet)
         }
@@ -39,11 +39,10 @@ export class TweetParser {
 
   /**
    * Extract tweet data from tweet element
-   * @param page Playwright page instance
    * @param tweetElement Tweet element handle
    * @returns Promise resolving to Tweet object
    */
-  static async extractTweetData(page: Page, tweetElement: ElementHandle): Promise<Tweet | null> {
+  static async extractTweetData(tweetElement: ElementHandle): Promise<Tweet | null> {
     try {
       // Extract tweet ID
       const id = await this.extractTweetId(tweetElement)

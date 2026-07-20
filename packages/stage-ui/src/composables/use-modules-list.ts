@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 
 import factorioIcon from '../assets/factorio-simple.png'
 
+import { useChatMemoryStore } from '../stores/chat-memory'
 import { useArtistryStore } from '../stores/modules/artistry'
 import { useConsciousnessStore } from '../stores/modules/consciousness'
 import { useDiscordStore } from '../stores/modules/discord'
@@ -41,6 +42,7 @@ export function useModulesList() {
   const minecraftStore = useMinecraftStore()
   const factorioStore = useFactorioStore()
   const artistryStore = useArtistryStore()
+  const chatMemoryStore = useChatMemoryStore()
   const beatSyncState = ref<BeatSyncDetectorState>()
 
   minecraftStore.initialize()
@@ -97,7 +99,7 @@ export function useModulesList() {
       description: t('settings.pages.modules.memory-short-term.description'),
       icon: 'i-solar:bookmark-bold-duotone',
       to: '/settings/modules/memory-short-term',
-      configured: false,
+      configured: true,
       category: 'essential',
     },
     {
@@ -106,7 +108,7 @@ export function useModulesList() {
       description: t('settings.pages.modules.memory-long-term.description'),
       icon: 'i-solar:book-bookmark-bold-duotone',
       to: '/settings/modules/memory-long-term',
-      configured: false,
+      configured: chatMemoryStore.configured,
       category: 'essential',
     },
     {

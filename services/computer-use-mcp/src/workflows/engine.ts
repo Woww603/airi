@@ -19,6 +19,8 @@ import process from 'node:process'
 
 import { randomUUID } from 'node:crypto'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { buildRecoveryPlan, evaluateStrategy, PREP_TOOL_POLICY } from '../strategy'
 import {
   explainActionIntent,
@@ -699,7 +701,7 @@ export async function executeWorkflow(params: {
         }
       }
       catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error)
+        const errorMessage = errorMessageFrom(error) ?? String(error)
         preparatoryResults.push({
           toolName: prepToolName,
           succeeded: false,
@@ -863,7 +865,7 @@ export async function executeWorkflow(params: {
       })
     }
     catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
+      const errorMsg = errorMessageFrom(error) ?? String(error)
       stateManager.completeCurrentStep('failure', errorMsg)
       // NOTICE: completeCurrentStep already increments failureCount — do NOT double-count.
       stepResults.push({
@@ -1082,7 +1084,7 @@ async function executePtyStepFamily(params: {
     }
   }
   catch (error) {
-    return { succeeded: false, explanation: `PTY step error: ${error instanceof Error ? error.message : String(error)}` }
+    return { succeeded: false, explanation: `PTY step error: ${errorMessageFrom(error) ?? String(error)}` }
   }
 }
 
@@ -1144,7 +1146,7 @@ async function executePtyCommand(params: {
   catch (error) {
     return {
       succeeded: false,
-      explanation: `PTY command execution error: ${error instanceof Error ? error.message : String(error)}`,
+      explanation: `PTY command execution error: ${errorMessageFrom(error) ?? String(error)}`,
     }
   }
 }
@@ -1490,7 +1492,7 @@ async function executeActionPreparations(params: {
       })
     }
     catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = errorMessageFrom(error) ?? String(error)
       existingPreparatoryResults.push({
         toolName: prepToolName,
         succeeded: false,

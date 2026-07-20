@@ -7,6 +7,7 @@ import NProgress from 'nprogress'
 import { autoAnimatePlugin } from '@formkit/auto-animate/vue'
 import { PiniaColada } from '@pinia/colada'
 import { isEnvTruthy } from '@proj-airi/stage-shared'
+import { initializeSensitiveStorage } from '@proj-airi/stage-shared/composables'
 import { MotionPlugin } from '@vueuse/motion'
 import { createPinia } from 'pinia'
 import { setupLayouts } from 'virtual:generated-layouts'
@@ -46,16 +47,22 @@ router.afterEach(() => {
   NProgress.done()
 })
 
-createApp(App)
-  .use(MotionPlugin)
-  // TODO: Fix autoAnimatePlugin type error
-  .use(autoAnimatePlugin as unknown as Plugin)
-  .use(router)
-  .use(pinia)
-  .use(PiniaColada)
-  .use(i18n)
-  .use(Tres)
-  .mount('#app')
+async function bootstrapRenderer(): Promise<void> {
+  await initializeSensitiveStorage()
+
+  createApp(App)
+    .use(MotionPlugin)
+    // TODO: Fix autoAnimatePlugin type error
+    .use(autoAnimatePlugin as unknown as Plugin)
+    .use(router)
+    .use(pinia)
+    .use(PiniaColada)
+    .use(i18n)
+    .use(Tres)
+    .mount('#app')
+}
+
+void bootstrapRenderer()
 
 if (import.meta.env.DEV && !import.meta.env.SSR) {
   function captureEvents(el: HTMLElement) {

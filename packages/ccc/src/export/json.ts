@@ -28,6 +28,7 @@ function createCardData(data: Card): CharacterCardV3['data'] {
     scenario: data.scenario ?? '',
     first_mes: data.greetings?.[0] ?? '',
     alternate_greetings: data.greetings?.slice(1) ?? [],
+    character_book: data.characterBook,
     group_only_greetings: data.greetingsGroupOnly ?? [],
     character_version: data.version,
     creator: data.creator ?? '',

@@ -1,5 +1,5 @@
 import type { WebSocketEventInputs } from '@proj-airi/server-sdk'
-import type { ChatHistoryItem, StreamingAssistantMessage } from '@proj-airi/stage-ui/types/chat'
+import type { ChatHistoryItem, ChatResponseAlternative, StreamingAssistantMessage } from '@proj-airi/stage-ui/types/chat'
 import type { ChatSessionMeta } from '@proj-airi/stage-ui/types/chat-session'
 import type { ChatProvider } from '@xsai-ext/providers/utils'
 
@@ -50,6 +50,12 @@ interface RetryCommandPayload {
   index: number
 }
 
+interface MessageTargetPayload {
+  sessionId?: string
+  messageId?: string
+  index?: number
+}
+
 type ChatSyncMessage
   = | { type: 'authority-announcement', authorityId: string, sentAt: number }
     | { type: 'request-snapshot', requestId: string, senderId: string }
@@ -59,6 +65,9 @@ type ChatSyncMessage
     | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'retry', payload: RetryCommandPayload }
     | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'cleanup', payload: { sessionId?: string } }
     | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'delete-message', payload: { sessionId?: string, messageId?: string, index?: number } }
+    | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'edit-message', payload: MessageTargetPayload & { content: string } }
+    | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'set-message-excluded', payload: MessageTargetPayload & { excluded: boolean } }
+    | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'select-response-alternative', payload: MessageTargetPayload & { alternativeIndex: number } }
     | { type: 'response', requestId: string, authorityId: string, ok: boolean, error?: string }
 
 interface PendingRequest {
@@ -117,6 +126,37 @@ function resolveRetrySourceIndex(messages: ChatHistoryItem[], index: number): nu
   }
 
   return -1
+}
+
+function toResponseAlternative(message: Extract<ChatHistoryItem, { role: 'assistant' }>): ChatResponseAlternative {
+  const slices = message.slices?.length
+    ? message.slices
+    : typeof message.content === 'string'
+      ? [{ type: 'text' as const, text: message.content }]
+      : []
+  return {
+    categorization: message.categorization,
+    content: message.content,
+    id: message.id ?? createRequestId(),
+    slices,
+    tool_results: message.tool_results ?? [],
+  }
+}
+
+function resolveRetryResponse(messages: ChatHistoryItem[], sourceIndex: number, targetIndex: number) {
+  const target = messages[targetIndex]
+  if (target?.role === 'assistant')
+    return target
+
+  for (let index = sourceIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (message?.role === 'user')
+      return undefined
+    if (message?.role === 'assistant')
+      return message
+  }
+
+  return undefined
 }
 
 function previewChatSyncPayload(payload: unknown): unknown {
@@ -331,6 +371,13 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     if (!text)
       throw new Error('Retry target has no retriable user message')
 
+    const previousResponse = resolveRetryResponse(currentMessages, sourceIndex, payload.index)
+    const previousAlternatives = previousResponse
+      ? previousResponse.responseAlternatives?.length
+        ? previousResponse.responseAlternatives
+        : [toResponseAlternative(previousResponse)]
+      : []
+
     const nextMessages = currentMessages.slice(0, sourceIndex)
     chatSession.setSessionMessages(sessionId, nextMessages)
 
@@ -338,6 +385,22 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       text,
       sessionId,
       toolset: 'widgets',
+    })
+
+    if (previousAlternatives.length === 0)
+      return
+
+    const generatedResponse = chatSession.getSessionMessages(sessionId).findLast(message => message.role === 'assistant')
+    if (!generatedResponse)
+      return
+
+    chatSession.setAssistantResponseAlternatives({
+      alternatives: [
+        ...previousAlternatives,
+        toResponseAlternative(generatedResponse),
+      ],
+      messageId: generatedResponse.id,
+      sessionId,
     })
   }
 
@@ -352,6 +415,33 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     })
 
     chatSession.setSessionMessages(sessionId, nextMessages)
+  }
+
+  function executeEditMessage(payload: MessageTargetPayload & { content: string }) {
+    const updated = chatSession.editSessionMessage({
+      ...payload,
+      sessionId: payload.sessionId || chatSession.activeSessionId,
+    })
+    if (!updated)
+      throw new Error('Editable chat message was not found')
+  }
+
+  function executeSetMessageExcluded(payload: MessageTargetPayload & { excluded: boolean }) {
+    const updated = chatSession.setSessionMessageExcluded({
+      ...payload,
+      sessionId: payload.sessionId || chatSession.activeSessionId,
+    })
+    if (!updated)
+      throw new Error('Chat message exclusion target was not found')
+  }
+
+  function executeSelectResponseAlternative(payload: MessageTargetPayload & { alternativeIndex: number }) {
+    const updated = chatSession.selectAssistantResponseAlternative({
+      ...payload,
+      sessionId: payload.sessionId || chatSession.activeSessionId,
+    })
+    if (!updated)
+      throw new Error('Assistant response alternative was not found')
   }
 
   function appendIngestErrorMessage(payload: IngestCommandPayload, message: string) {
@@ -393,6 +483,15 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
           break
         case 'delete-message':
           executeDeleteMessage(message.payload)
+          break
+        case 'edit-message':
+          executeEditMessage(message.payload)
+          break
+        case 'set-message-excluded':
+          executeSetMessageExcluded(message.payload)
+          break
+        case 'select-response-alternative':
+          executeSelectResponseAlternative(message.payload)
           break
       }
 
@@ -593,6 +692,51 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     })
   }
 
+  async function requestEditMessage(payload: MessageTargetPayload & { content: string }) {
+    if (mode.value === 'authority') {
+      executeEditMessage(payload)
+      return
+    }
+
+    return await dispatchCommand({
+      type: 'command',
+      requestId: createRequestId(),
+      senderId: instanceId,
+      command: 'edit-message',
+      payload,
+    })
+  }
+
+  async function requestSetMessageExcluded(payload: MessageTargetPayload & { excluded: boolean }) {
+    if (mode.value === 'authority') {
+      executeSetMessageExcluded(payload)
+      return
+    }
+
+    return await dispatchCommand({
+      type: 'command',
+      requestId: createRequestId(),
+      senderId: instanceId,
+      command: 'set-message-excluded',
+      payload,
+    })
+  }
+
+  async function requestSelectResponseAlternative(payload: MessageTargetPayload & { alternativeIndex: number }) {
+    if (mode.value === 'authority') {
+      executeSelectResponseAlternative(payload)
+      return
+    }
+
+    return await dispatchCommand({
+      type: 'command',
+      requestId: createRequestId(),
+      senderId: instanceId,
+      command: 'select-response-alternative',
+      payload,
+    })
+  }
+
   function dispose() {
     stopWatchers()
     clearHeartbeat()
@@ -611,5 +755,8 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     requestRetry,
     requestCleanup,
     requestDeleteMessage,
+    requestEditMessage,
+    requestSetMessageExcluded,
+    requestSelectResponseAlternative,
   }
 })

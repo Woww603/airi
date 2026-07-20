@@ -1,10 +1,11 @@
 import type { BrowserWindow } from 'electron'
 
 import type { FileLoggerHandle } from './app/file-logger'
+import type { SecureStorageHandle } from './services/electron/secure-storage'
 
 import process, { env, platform } from 'node:process'
 
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import messages from '@proj-airi/i18n/locales'
@@ -20,23 +21,26 @@ import { isLinux } from 'std-env'
 
 import icon from '../../resources/icon.png?asset'
 
+import { installConsoleWriteFailureGuard } from './app/console-write-guard'
 import { openDebugger, setupDebugger } from './app/debugger'
 import { nullFileLoggerHandle, setupFileLogger } from './app/file-logger'
 import { installSingleInstanceGuard } from './app/single-instance'
 import { createArtistryConfig } from './configs/artistry'
 import { createGlobalAppConfig } from './configs/global'
 import { emitAppBeforeQuit, emitAppReady, emitAppWindowAllClosed } from './libs/bootkit/lifecycle'
-import { setElectronMainDirname } from './libs/electron/location'
+import { baseUrl, getElectronMainDirname, setElectronMainDirname } from './libs/electron/location'
 import { createI18n } from './libs/i18n'
-import { createWindowAuthManagerService } from './services/airi/auth'
 import { setupServerChannel } from './services/airi/channel-server'
+import { setupDiscordBridgeService } from './services/airi/discord-bridge'
 import { setupGodotStageManager } from './services/airi/godot-stage'
 import { setupBuiltInServer } from './services/airi/http-server'
 import { setupMcpStdioManager } from './services/airi/mcp-servers'
 import { setupPluginHost } from './services/airi/plugins'
+import { createElectronPluginSandboxRuntimeSessionFactory, registerPluginSandboxScheme } from './services/airi/plugins/sandbox'
 import { setupArtistryBridge } from './services/airi/widgets/artistry-bridge'
 import { setupAutoUpdater } from './services/electron/auto-updater'
 import { setupGlobalShortcutService } from './services/electron/global-shortcut'
+import { setupSecureStorage } from './services/electron/secure-storage'
 import { setupTray } from './tray'
 import { setupAboutWindowReusable } from './windows/about'
 import { setupBeatSync } from './windows/beat-sync'
@@ -48,12 +52,15 @@ import { setupMainWindow } from './windows/main'
 import { setupNoticeWindowManager } from './windows/notice'
 import { setupOnboardingWindowManager } from './windows/onboarding'
 import { setupSettingsWindowReusableFunc } from './windows/settings'
+import { isTrustedRendererNavigation } from './windows/shared/security'
 import { setupWidgetsWindowManager } from './windows/widgets'
 
 // TODO: once we refactored eventa to support window-namespaced contexts,
 // we can remove the setMaxListeners call below since eventa will be able to dispatch and
 // manage events within eventa's context system.
 ipcMain.setMaxListeners(100)
+installConsoleWriteFailureGuard()
+registerPluginSandboxScheme()
 
 setElectronMainDirname(dirname(fileURLToPath(import.meta.url)))
 setGlobalFormat(Format.Pretty)
@@ -107,6 +114,7 @@ if (shouldStartMainProcess) {
 
 let fileLogger: FileLoggerHandle = nullFileLoggerHandle
 let skipFileLogging = false
+let secureStorage: SecureStorageHandle | undefined
 
 app.whenReady().then(async () => {
   if (!shouldStartMainProcess) {
@@ -121,6 +129,12 @@ app.whenReady().then(async () => {
     if (skipFileLogging || fileLogger.logFileFd === null)
       return
     void fileLogger.appendLog(formatted)
+  })
+
+  const rendererLocation = baseUrl(join(getElectronMainDirname(), '../renderer'))
+  secureStorage = await setupSecureStorage({
+    filePath: join(app.getPath('userData'), 'secure-storage', 'secrets.v1.bin'),
+    isTrustedRendererUrl: url => isTrustedRendererNavigation(url, rendererLocation),
   })
 
   injeca.setLogger(createLoggLogger(useLogg('injeca').useGlobalConfig()))
@@ -149,7 +163,21 @@ app.whenReady().then(async () => {
 
   const serverChannel = injeca.provide('modules:channel-server', {
     dependsOn: { app: electronApp, lifecycle },
-    build: async ({ dependsOn }) => setupServerChannel(dependsOn),
+    build: async ({ dependsOn }) => setupServerChannel({
+      ...dependsOn,
+      secureStorage: secureStorage!,
+    }),
+  })
+
+  const discordBridge = injeca.provide('modules:discord-bridge', {
+    dependsOn: { lifecycle, serverChannel },
+    build: ({ dependsOn }) => setupDiscordBridgeService({
+      entryPath: join(getElectronMainDirname(), 'discord-bridge.js'),
+      isTrustedRendererUrl: url => isTrustedRendererNavigation(url, rendererLocation),
+      lifecycle: dependsOn.lifecycle,
+      secureStorage: secureStorage!,
+      serverChannel: dependsOn.serverChannel,
+    }),
   })
 
   const airiHttpServer = injeca.provide('modules:airi-http-server', {
@@ -171,10 +199,11 @@ app.whenReady().then(async () => {
 
   const pluginHost = injeca.provide('modules:plugin-host', {
     dependsOn: { serverChannel, widgetsManager },
-    build: ({ dependsOn }) => setupPluginHost(dependsOn),
+    build: ({ dependsOn }) => setupPluginHost({
+      ...dependsOn,
+      runtimeSessionFactory: createElectronPluginSandboxRuntimeSessionFactory(),
+    }),
   })
-
-  const windowAuthManager = injeca.provide('services:window-auth-manager', () => createWindowAuthManagerService())
 
   const globalShortcut = injeca.provide('services:global-shortcut', () => setupGlobalShortcutService())
 
@@ -184,7 +213,7 @@ app.whenReady().then(async () => {
   const devtoolsMarkdownStressWindow = injeca.provide('windows:devtools:markdown-stress', () => setupDevtoolsWindow())
 
   const onboardingWindowManager = injeca.provide('windows:onboarding', {
-    dependsOn: { serverChannel, i18n, windowAuthManager },
+    dependsOn: { serverChannel, i18n },
     build: ({ dependsOn }) => setupOnboardingWindowManager(dependsOn),
   })
 
@@ -204,12 +233,12 @@ app.whenReady().then(async () => {
   })
 
   const settingsWindow = injeca.provide('windows:settings', {
-    dependsOn: { widgetsManager, beatSync, autoUpdater, devtoolsWindow: devtoolsMarkdownStressWindow, serverChannel, godotStageManager, mcpStdioManager, i18n, windowAuthManager, globalShortcut },
+    dependsOn: { widgetsManager, beatSync, autoUpdater, devtoolsWindow: devtoolsMarkdownStressWindow, serverChannel, godotStageManager, mcpStdioManager, i18n, globalShortcut },
     build: async ({ dependsOn }) => setupSettingsWindowReusableFunc(dependsOn),
   })
 
   const mainWindow = injeca.provide('windows:main', {
-    dependsOn: { settingsWindow, chatWindow, widgetsManager, noticeWindow, beatSync, autoUpdater, serverChannel, godotStageManager, mcpStdioManager, i18n, onboardingWindowManager, windowAuthManager },
+    dependsOn: { settingsWindow, chatWindow, widgetsManager, noticeWindow, beatSync, autoUpdater, serverChannel, godotStageManager, mcpStdioManager, i18n, onboardingWindowManager },
     build: async ({ dependsOn }) => setupMainWindow({
       ...dependsOn,
       onWindowCreated: (window) => {
@@ -245,7 +274,7 @@ app.whenReady().then(async () => {
   }
 
   injeca.invoke({
-    dependsOn: { mainWindow, tray, serverChannel, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, artistryConfig },
+    dependsOn: { mainWindow, tray, serverChannel, discordBridge, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, artistryConfig },
     callback: async (deps) => {
       const { context } = createContext(ipcMain)
       await setupArtistryBridge({
@@ -315,6 +344,14 @@ async function handleAppExit() {
   await Promise.all([
     logIfError('execute onAppBeforeQuit hooks', () => emitAppBeforeQuit()),
     logIfError('stop injeca', () => injeca.stop()),
+    logIfError('flush protected credentials', async () => {
+      try {
+        await secureStorage?.flush()
+      }
+      finally {
+        secureStorage?.dispose()
+      }
+    }),
   ])
 
   // Prevent the global log hook from trying to write to the file after close() is called,

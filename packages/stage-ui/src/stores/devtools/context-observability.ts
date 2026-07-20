@@ -1,3 +1,4 @@
+import type { PromptContribution } from '@proj-airi/core-agent'
 import type { ContextUpdateStrategy } from '@proj-airi/server-sdk'
 import type { Message } from '@xsai/shared-chat'
 
@@ -45,6 +46,7 @@ export interface PromptProjectionSnapshot {
   promptText: string
   promptMessage?: Message
   composedMessage?: Message[]
+  contributions: PromptContribution[]
 }
 
 const DEFAULT_MAX_HISTORY = 200
@@ -99,6 +101,7 @@ export const useContextObservabilityStore = defineStore('devtools:context-observ
     contexts: Record<string, ContextMessage[]>
     promptMessage?: Message | null
     composedMessage?: Message[]
+    contributions: PromptContribution[]
   }) {
     lastPromptProjection.value = {
       capturedAt: Date.now(),
@@ -108,6 +111,7 @@ export const useContextObservabilityStore = defineStore('devtools:context-observ
       promptText: formatContextPromptText(payload.contexts),
       promptMessage: payload.promptMessage ? cloneValue(payload.promptMessage) : undefined,
       composedMessage: payload.composedMessage ? cloneValue(payload.composedMessage) : undefined,
+      contributions: cloneValue(payload.contributions),
     }
   }
 

@@ -1,0 +1,26 @@
+{
+  "name": "@proj-airi/discord-dashboard",
+  "type": "module",
+  "version": "0.2.2",
+  "private": true,
+  "description": "Standalone AIRI Discord desktop app",
+  "license": "MIT",
+  "main": "out/main/index.js",
+  "scripts": {
+    "build": "esbuild src/main/index.ts --bundle --platform=node --format=esm --target=node22 --alias:ffmpeg-static=./src/main/ffmpegStaticUnavailable.cjs --external:electron --external:zlib-sync --loader:.node=file --asset-names=\\[name\\] --outfile=out/main/index.js --banner:js=\"import { createRequire as __createRequire } from 'node:module'; import { dirname as __pathDirname } from 'node:path'; import { fileURLToPath as __fileURLToPath } from 'node:url'; const require = __createRequire(import.meta.url); const __filename = __fileURLToPath(import.meta.url); const __dirname = __pathDirname(__filename);\" && node src/main/copy-opusscript-runtime.mjs && node scripts/classicVoiceAudioBundleSmoke.mjs",
+    "build:mac": "pnpm run build && electron-builder --mac --dir --config electron-builder.config.ts",
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@moeru/std": "catalog:",
+    "@proj-airi/discord-bot": "workspace:*",
+    "@types/node": "catalog:",
+    "electron": "catalog:",
+    "electron-builder": "catalog:",
+    "electron-vite": "catalog:",
+    "esbuild": "catalog:",
+    "typescript": "catalog:"
+  }
+}

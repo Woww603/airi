@@ -194,7 +194,17 @@ export function isHostile(mob: Entity): boolean {
 }
 
 function levenshteinDistance(a: string, b: string): number {
-  const matrix: number[][] = Array.from({ length: a.length + 1 }).fill(Array.from({ length: b.length + 1 }).fill(0))
+  // Dynamic-programming rows must be independent; aliasing one row corrupts
+  // previously computed edit distances as later rows are updated.
+  // NOTICE:
+  // Array.from({ length }).fill(value) is inferred as unknown[] even though fill replaces every slot.
+  // The root cause is TypeScript's empty ArrayLike inference combined with e18e/prefer-array-fill.
+  // Source/context: getClosestBlockName regression coverage and the repository ESLint rules.
+  // Removal condition: TypeScript infers the filled value type or the lint rule accepts a typed mapper.
+  const matrix = Array.from(
+    { length: a.length + 1 },
+    () => Array.from({ length: b.length + 1 }).fill(0) as number[],
+  )
 
   for (let i = 0; i <= a.length; i++)
     matrix[i][0] = i

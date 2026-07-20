@@ -1,5 +1,7 @@
 import type { OIDCFlowParams, TokenResponse } from './auth-oidc'
 
+import { isStageTamagotchi } from '@proj-airi/stage-shared'
+import { getSensitiveStorageItem } from '@proj-airi/stage-shared/composables'
 import { createAuthClient } from 'better-auth/vue'
 
 import { useAuthStore } from '../stores/auth'
@@ -9,13 +11,22 @@ import { SERVER_URL } from './server'
 
 export type OAuthProvider = 'google' | 'github'
 
-// NOTICE: reads the same localStorage key ('auth/v1/token') that useAuthStore's
-// `token` ref writes via useLocalStorage. We bypass the store here because
+const ELECTRON_OIDC_CLIENT_ID = 'airi-stage-electron'
+
+function resolvePersistedOidcClientId() {
+  if (isStageTamagotchi() && OIDC_CLIENT_ID === 'airi-stage-web')
+    return ELECTRON_OIDC_CLIENT_ID
+
+  return OIDC_CLIENT_ID
+}
+
+// NOTICE: reads the same protected storage key ('auth/v1/token') that
+// useAuthStore's `token` ref writes. We bypass the store here because
 // authClient is initialized at module scope, before Pinia is active — calling
-// useAuthStore() at this point would throw. The two stay in sync because
-// useLocalStorage and raw localStorage share the same underlying storage entry.
+// useAuthStore() at this point would throw. The renderer entrypoint initializes
+// sensitive storage before auth requests are allowed to run.
 export function getAuthToken(): string | null {
-  return localStorage.getItem('auth/v1/token')
+  return getSensitiveStorageItem('auth/v1/token')
 }
 
 export const authClient = createAuthClient({
@@ -47,21 +58,21 @@ export async function initializeAuth() {
 
   const authStore = useAuthStore()
 
-  // Normalize "half-cleared" persisted state before anything reads it.
-  //
-  // Why: `refreshToken` was added to the auth store before `oidcClientId`
-  // (commit c73ceeb1f predates f1fe161bc), and `clearOIDCState` (now removed)
-  // used to clear only the OIDC pair. Browsers that saw either code path can
-  // end up with a refreshToken but no oidcClientId, which makes
-  // `refreshTokenNow()` early-return forever — 401s then silently accumulate
-  // on non-home pages until the user lands on a route that calls fetchSession.
-  //
-  // Treat any mismatch as an unauthenticated session; the user will get a
-  // fresh OIDC login prompt via the standard 401→needsLogin path.
+  // Normalize persisted refresh state before anything reads it.
   const hasRefreshToken = !!authStore.refreshToken
   const hasClientId = !!authStore.oidcClientId
-  if (hasRefreshToken !== hasClientId)
+  if (hasRefreshToken && !hasClientId) {
+    // NOTICE:
+    // Older Electron auth callbacks persisted refresh tokens before `oidcClientId`
+    // was reliably stored, leaving valid sessions in a recoverable half-state.
+    // Root cause: `apps/stage-tamagotchi/src/renderer/bridges/electron-auth-callback.ts`
+    // now writes `auth/v1/oidc-client-id`, but existing profiles may predate that.
+    // Removal condition: remove after all supported profiles have either migrated or expired.
+    authStore.oidcClientId = resolvePersistedOidcClientId()
+  }
+  else if (!hasRefreshToken && hasClientId) {
     authStore.clearAllAuthState()
+  }
 
   // NOTICE: restoreRefreshSchedule must complete BEFORE fetchSession when
   // the persisted access token is already expired. Otherwise fetchSession
@@ -110,7 +121,7 @@ export async function fetchSession() {
     return true
   }
 
-  // Session expired or invalid — clear stale auth state from localStorage
+  // Session expired or invalid — clear stale protected auth state.
   authStore.clearAllAuthState()
   return false
 }

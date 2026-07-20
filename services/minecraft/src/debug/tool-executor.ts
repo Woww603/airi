@@ -4,6 +4,8 @@ import type { ZodObject, ZodType } from 'zod'
 import type { Mineflayer } from '../libs/mineflayer'
 import type { ToolDefinition, ToolParameter } from './types'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { actionsList } from '../cognitive/action/llm-actions'
 import { DebugService } from './debug-service'
 
@@ -86,7 +88,7 @@ export class ToolExecutor {
       this.debugService.emit('debug:tool_result', {
         toolName,
         params,
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMessageFrom(err) ?? String(err),
         timestamp: Date.now(),
       })
     }

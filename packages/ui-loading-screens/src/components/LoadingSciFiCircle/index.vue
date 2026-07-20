@@ -360,7 +360,9 @@ async function writeLine<T extends any[]>(
       }
       catch (error) {
         currentEntry.status = 'error'
-        currentEntry.error = error instanceof Error ? error.message : String(error)
+        currentEntry.error = String(error)
+        if (error instanceof Error)
+          currentEntry.error = error.message
         currentEntry.content = `${fullLine} [ ERROR ]`
       }
     }

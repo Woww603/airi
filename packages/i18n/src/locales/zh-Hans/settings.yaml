@@ -656,9 +656,31 @@ pages:
     memory-long-term:
       description: 长期记忆
       title: 长期记忆
+      enable: 启用本地记忆
+      enable-description: 保存聊天里可复用的偏好、事实和称呼，并在之后回复时召回。
+      refresh: 刷新
+      clear: 清空记忆
+      confirm-clear: 确认清空
+      delete: 删除
+      confirm-delete: 确认删除
+      loading: 正在读取记忆……
+      empty: 当前会话还没有保存的长期记忆。
+      count: 已保存 {count} 条记忆
+      scope: '当前作用域：用户 {userId} / 角色 {characterId} / 会话 {sessionId}'
+      accessed: 已召回 {count} 次
+      privacy-title: 隐私提示
+      privacy-description: 记忆保存在本地用户数据中；当 AIRI 召回某条记忆并调用模型回复时，该记忆会随提示词发送给当前配置的模型服务。
+      roles:
+        user: 用户
+        assistant: AIRI
     memory-short-term:
       description: 短期记忆
       title: 短期记忆
+      status-title: 当前会话上下文已启用
+      status-description: AIRI 会把当前聊天窗口里的近期消息作为短期上下文，用来维持对话连续性。
+      long-term-title: 管理可跨会话召回的记忆
+      long-term-description: 偏好、事实和称呼会进入长期记忆列表，可在长期记忆页面查看或删除。
+      open-long-term: 打开长期记忆
     messaging-discord:
       description: Discord 发消息和语音聊天
       title: Discord
@@ -667,7 +689,57 @@ pages:
       token: 机器人令牌
       token-description: 您的Discord机器人令牌
       token-placeholder: 输入您的Discord机器人令牌
+      clear-token: 清除已保存令牌
       configured: Discord已正确配置！
+      security:
+        title: 安全
+        allowed-channel-ids: 允许响应的频道 ID
+        allowed-channel-ids-description: 填写后，AIRI 只会在这些精确 Discord 频道里响应；留空则允许所有被提及的服务器频道。
+        allowed-channel-ids-placeholder: 每行一个频道 ID，也可以用逗号分隔
+        allow-direct-messages: 允许私信
+        allow-direct-messages-description: 关闭后，即使机器人能收到私信，AIRI 也会忽略 Discord 私信。
+        admin-role-ids: 管理员角色 ID
+        admin-role-ids-description: 允许使用后续 Discord 侧管理命令的角色。
+        admin-role-ids-placeholder: 每行一个角色 ID，也可以用逗号分隔
+        memory-consent-required: 需要记忆同意
+        memory-consent-required-description: 开启后，Discord 回合不会读取长期记忆，也不会写入长期记忆。
+        privacy-notice-enabled: 发送隐私提示
+        privacy-notice-enabled-description: AIRI 在每个 Discord 会话第一次处理消息前，会先发送一次简短提示。
+        privacy-notice-text: 隐私提示内容
+        privacy-notice-text-description: 尽量保持简短；它会在每个会话首次处理前发到 Discord。
+        privacy-notice-text-placeholder: 说明服务器/频道/用户隔离和记忆行为
+        audit-log-enabled: 启用审计日志
+        audit-log-enabled-description: 为已接受、已拒绝和隐私提示等 Discord 事件写入本地结构化日志。
+        message-pacing-ms: 输入中停顿
+        message-pacing-ms-description: 先发送 typing 状态，并等待这么多毫秒后再把 Discord 文本转给 AIRI。
+        message-pacing-ms-placeholder: 600
+        rate-limit-max-messages: 速率限制次数
+        rate-limit-max-messages-description: 每个精确 Discord 会话/窗口内最多接受的文本消息数；填 0 可关闭限制。
+        rate-limit-max-messages-placeholder: 6
+        rate-limit-window-ms: 速率限制窗口
+        rate-limit-window-ms-description: 每个 Discord 会话速率限制的窗口长度，单位是毫秒。
+        rate-limit-window-ms-placeholder: 30000
+      rules:
+        title: 按服务器隔离的规则
+        guild-id: 服务器 ID
+        guild-id-description: 用于规则隔离的精确 Discord 服务器 ID。
+        guild-id-placeholder: 粘贴 Discord guild/server ID
+        guild-rules: 服务器规则
+        guild-rules-description: 仅当当前 Discord 输入来自这个精确服务器时生效。
+        guild-rules-placeholder: 只属于这个服务器的规则
+        channel-id: 频道 ID
+        channel-id-description: 可选，所选服务器内的精确 Discord 频道 ID。
+        channel-id-placeholder: 粘贴 Discord channel ID
+        channel-rules: 频道规则
+        channel-rules-description: 仅在这个精确服务器和频道内生效。
+        channel-rules-placeholder: 只属于这个频道的规则
+        save-guild: 保存服务器规则
+        clear-guild: 清空服务器规则
+        save-channel: 保存频道规则
+        clear-channel: 清空频道规则
+        observed: 已观察到的服务器
+        observed-channels: 已观察到的频道
+        no-observed: 暂未观察到 Discord 服务器元数据。
     speech:
       description: 语音合成
       sections:

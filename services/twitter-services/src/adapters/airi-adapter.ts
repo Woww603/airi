@@ -8,6 +8,7 @@ import type { TwitterServices } from '../types/services'
 
 import * as fs from 'node:fs/promises'
 
+import { errorMessageFrom } from '@moeru/std'
 import { Client } from '@proj-airi/server-sdk'
 
 import { getDefaultConfig } from '../config/types'
@@ -270,7 +271,7 @@ ${tweets.map((t: Tweet) => `- ${t.author.displayName}: ${t.text.substring(0, 80)
       }
     }
     catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      const errorMessage = errorMessageFrom(error) ?? String(error)
       logger.main.errorWithError('Error handling input:', error)
       this.client.send({
         type: 'input:text',

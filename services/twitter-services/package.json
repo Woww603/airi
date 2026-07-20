@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "playwright install chromium && tsx --env-file=.env.local src/main.ts",
     "mcp:ui": "pnpx @modelcontextprotocol/inspector",
+    "test:run": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,5 +20,8 @@
     "h3": "catalog:",
     "playwright": "catalog:",
     "zod": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:vitest"
   }
 }

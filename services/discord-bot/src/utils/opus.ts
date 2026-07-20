@@ -3,6 +3,8 @@ import { Transform } from 'node:stream'
 
 import OpusScript from 'opusscript'
 
+import { errorMessageFrom } from '@moeru/std'
+
 export class OpusDecoder extends Transform {
   private decoder: OpusScript
 
@@ -15,7 +17,7 @@ export class OpusDecoder extends Transform {
     this.decoder = new OpusScript(sampleRate, channels)
   }
 
-  _transform(chunk: Buffer, encoding: BufferEncoding, callback: (...args: any[]) => void) {
+  _transform(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null, data?: Buffer) => void) {
     try {
       // Decode Opus chunk to PCM
       const pcm = this.decoder.decode(chunk)
@@ -25,12 +27,13 @@ export class OpusDecoder extends Transform {
       callback()
     }
     catch (error) {
-      this.emit('error', error)
-      callback(error)
+      const decoderError = new Error(errorMessageFrom(error) ?? 'Unknown Opus decoder failure.', { cause: error })
+      this.emit('error', decoderError)
+      callback(decoderError)
     }
   }
 
-  _flush(callback: (...args: any[]) => void) {
+  _flush(callback: (error?: Error | null, data?: Buffer) => void) {
     callback()
   }
 }

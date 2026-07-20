@@ -1,6 +1,8 @@
 import type { TwitterService } from '../../types/services'
 import type { Context } from '../browser/context'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { TWITTER_BASE_URL, TWITTER_HOME_URL, TWITTER_SEARCH_URL } from '../../constants'
 import { SELECTORS } from '../../parsers/selectors'
 import { TweetParser } from '../../parsers/tweet-parser'
@@ -98,7 +100,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
     }
     catch (error: unknown) {
       console.error('Error searching tweets:', error)
-      throw new Error(`Failed to search tweets: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`Failed to search tweets: ${errorMessageFrom(error) ?? String(error)}`)
     }
   }
 
@@ -135,7 +137,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
     }
     catch (error: unknown) {
       console.error('Error liking tweet:', error)
-      throw new Error(`Failed to like tweet: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`Failed to like tweet: ${errorMessageFrom(error) ?? String(error)}`)
     }
   }
 
@@ -170,7 +172,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
     }
     catch (error: unknown) {
       console.error('Error retweeting:', error)
-      throw new Error(`Failed to retweet: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`Failed to retweet: ${errorMessageFrom(error) ?? String(error)}`)
     }
   }
 
@@ -259,7 +261,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
     }
     catch (error: unknown) {
       console.error('Error posting tweet:', error)
-      throw new Error(`Failed to post tweet: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`Failed to post tweet: ${errorMessageFrom(error) ?? String(error)}`)
     }
   }
 
@@ -279,7 +281,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
       }
 
       // Use the TweetParser to extract the main tweet data
-      const mainTweet = await TweetParser.extractTweetData(page, tweetElement)
+      const mainTweet = await TweetParser.extractTweetData(tweetElement)
       if (!mainTweet) {
         throw new Error('Failed to extract tweet data')
       }
@@ -288,7 +290,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
       let quotedTweet: Tweet | undefined
       const quotedTweetElement = await page.$('[data-testid="quotedTweet"]')
       if (quotedTweetElement) {
-        const extractedQuotedTweet = await TweetParser.extractTweetData(page, quotedTweetElement)
+        const extractedQuotedTweet = await TweetParser.extractTweetData(quotedTweetElement)
         if (extractedQuotedTweet) {
           quotedTweet = extractedQuotedTweet
         }
@@ -305,7 +307,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
 
       const replies: Tweet[] = []
       for (const replyElement of replyElements) {
-        const extractedReply = await TweetParser.extractTweetData(page, replyElement)
+        const extractedReply = await TweetParser.extractTweetData(replyElement)
         if (extractedReply) {
           replies.push(extractedReply)
         }
@@ -322,7 +324,7 @@ export function useTwitterTweetServices(ctx: Context): TwitterService {
     }
     catch (error: unknown) {
       console.error('Error getting tweet details:', error)
-      throw new Error(`Failed to get tweet details: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`Failed to get tweet details: ${errorMessageFrom(error) ?? String(error)}`)
     }
   }
 

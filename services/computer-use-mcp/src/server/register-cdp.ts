@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import type { ComputerUseServerRuntime } from './runtime'
 
+import { errorMessageFrom } from '@moeru/std'
 import { z } from 'zod'
 
 import { textContent } from './content'
@@ -40,11 +41,11 @@ export function registerCdpTools({ server, runtime }: RegisterCdpToolsOptions) {
         return {
           isError: true,
           content: [
-            textContent(`CDP connect failed: ${error instanceof Error ? error.message : String(error)}. Ensure Chrome is running with --remote-debugging-port=9222.`),
+            textContent(`CDP connect failed: ${errorMessageFrom(error) ?? String(error)}. Ensure Chrome is running with --remote-debugging-port=9222.`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }
@@ -95,11 +96,11 @@ export function registerCdpTools({ server, runtime }: RegisterCdpToolsOptions) {
         return {
           isError: true,
           content: [
-            textContent(`CDP accessibility snapshot failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`CDP accessibility snapshot failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }
@@ -129,11 +130,11 @@ export function registerCdpTools({ server, runtime }: RegisterCdpToolsOptions) {
         return {
           isError: true,
           content: [
-            textContent(`CDP evaluate failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`CDP evaluate failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }
@@ -170,11 +171,11 @@ export function registerCdpTools({ server, runtime }: RegisterCdpToolsOptions) {
         return {
           isError: true,
           content: [
-            textContent(`CDP collect elements failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`CDP collect elements failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }
@@ -215,11 +216,11 @@ export function registerCdpTools({ server, runtime }: RegisterCdpToolsOptions) {
         return {
           isError: true,
           content: [
-            textContent(`CDP screenshot failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`CDP screenshot failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }
@@ -249,11 +250,11 @@ export function registerCdpTools({ server, runtime }: RegisterCdpToolsOptions) {
         return {
           isError: true,
           content: [
-            textContent(`CDP navigate failed: ${error instanceof Error ? error.message : String(error)}`),
+            textContent(`CDP navigate failed: ${errorMessageFrom(error) ?? String(error)}`),
           ],
           structuredContent: {
             status: 'error',
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageFrom(error) ?? String(error),
           },
         }
       }

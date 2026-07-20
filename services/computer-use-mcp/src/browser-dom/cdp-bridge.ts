@@ -12,6 +12,7 @@
  * --remote-debugging-port.
  */
 
+import { errorMessageFrom } from '@moeru/std'
 import { WebSocket } from 'ws'
 
 export interface CdpBridgeConfig {
@@ -176,7 +177,7 @@ export class CdpBridge {
         if (this.socket && this.socket !== socket)
           return
 
-        const message = error instanceof Error ? error.message : String(error)
+        const message = errorMessageFrom(error) ?? String(error)
         if (!this.socket && connectionSettled)
           return
 
@@ -456,7 +457,7 @@ export class CdpBridge {
         this.awaitingHeartbeatPong = true
       }
       catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
+        const message = errorMessageFrom(error) ?? String(error)
         this.teardownAfterHeartbeatFailure(message)
       }
     }, intervalMs)

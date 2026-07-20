@@ -22,6 +22,8 @@ import { existsSync, readdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { appNamesMatch, getKnownAppLaunchNames } from '../app-aliases'
 import { probeDisplayInfo, probePermissionInfo } from '../runtime-probes'
 import { runProcess } from '../utils/process'
@@ -524,7 +526,7 @@ export function createMacOSLocalExecutor(config: ComputerUseConfig): DesktopExec
         return observationToForegroundContext(await observeWindows(config, { limit: 8 }))
       }
       catch (error) {
-        return fallbackContext(error instanceof Error ? error.message : String(error))
+        return fallbackContext(errorMessageFrom(error) ?? String(error))
       }
     },
     getDisplayInfo: () => probeDisplayInfo(config),

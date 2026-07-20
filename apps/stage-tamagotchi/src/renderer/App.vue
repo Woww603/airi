@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { DiscordBridgeConfiguration } from '@proj-airi/stage-shared/discord-bridge'
+
 import { defineInvokeHandler } from '@moeru/eventa'
 import { useElectronEventaContext, useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { themeColorFromValue, useThemeColor } from '@proj-airi/stage-layouts/composables/theme-color'
@@ -8,12 +10,14 @@ import { useInferencePreload } from '@proj-airi/stage-ui/composables'
 import { useSharedAnalyticsStore } from '@proj-airi/stage-ui/stores/analytics'
 import { useCharacterOrchestratorStore } from '@proj-airi/stage-ui/stores/character'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
+import { registerSecureModuleConfigurationHandler } from '@proj-airi/stage-ui/stores/configurator'
 import { usePluginHostInspectorStore } from '@proj-airi/stage-ui/stores/devtools/plugin-host-debug'
 import { useDisplayModelsStore } from '@proj-airi/stage-ui/stores/display-models'
 import { useModsServerChannelStore } from '@proj-airi/stage-ui/stores/mods/api/channel-server'
 import { useContextBridgeStore } from '@proj-airi/stage-ui/stores/mods/api/context-bridge'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { useArtistryStore } from '@proj-airi/stage-ui/stores/modules/artistry'
+import { useDiscordStore } from '@proj-airi/stage-ui/stores/modules/discord'
 import { usePerfTracerBridgeStore } from '@proj-airi/stage-ui/stores/perf-tracer-bridge'
 import { listProvidersForPluginHost, shouldPublishPluginHostCapabilities } from '@proj-airi/stage-ui/stores/plugin-host-capabilities'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
@@ -26,7 +30,7 @@ import { toast, Toaster } from 'vue-sonner'
 import ResizeHandler from './components/ResizeHandler.vue'
 
 import {
-  electronGetServerChannelConfig,
+  electronConfigureDiscordBridge,
   electronGodotStageGetStatus,
   electronGodotStageStatusChanged,
   electronSettingsNavigate,
@@ -77,13 +81,13 @@ const pluginToolsStore = useTamagotchiPluginToolsStore()
 const stageWindowLifecycleStore = useStageWindowLifecycleStore()
 const settingsAudioDeviceStore = useSettingsAudioDevice()
 const artistryStore = useArtistryStore()
+const discordStore = useDiscordStore()
 const { activeProvider, artistryGlobals, activeModel, defaultPromptPrefix, providerOptions } = storeToRefs(artistryStore)
 const context = useElectronEventaContext()
 usePerfTracerBridgeStore()
 initializeStageThreeRuntimeTraceBridge()
 initializeElectronAuthCallbackBridge()
 void stageWindowLifecycleStore.initializeWindowLifecycleBridge()
-const getServerChannelConfig = useElectronEventaInvoke(electronGetServerChannelConfig)
 const listPlugins = useElectronEventaInvoke(electronPluginList)
 const setPluginEnabled = useElectronEventaInvoke(electronPluginSetEnabled)
 const setPluginAutoReload = useElectronEventaInvoke(electronPluginSetAutoReload)
@@ -96,8 +100,12 @@ const reportPluginCapability = useElectronEventaInvoke(electronPluginUpdateCapab
 const getMainLocale = useElectronEventaInvoke(i18nGetLocale)
 const setLocale = useElectronEventaInvoke(i18nSetLocale)
 const getGodotStageStatus = useElectronEventaInvoke(electronGodotStageGetStatus)
+const configureDiscordBridge = useElectronEventaInvoke(electronConfigureDiscordBridge)
 const syncArtistryConfig = useElectronEventaInvoke(artistrySyncConfig)
 const chatSyncLifecycle = createChatSyncWindowLifecycle(route.path)
+const unregisterDiscordConfiguration = registerSecureModuleConfigurationHandler<DiscordBridgeConfiguration>('discord', async (config) => {
+  await configureDiscordBridge(config)
+})
 const isChatWindowRoute = () => route.path === '/chat'
 const isGodotStageRoute = () => route.path === '/' || route.path.startsWith('/settings')
 const isWidgetsWindowRoute = () => route.path === '/widgets'
@@ -226,10 +234,8 @@ onMounted(async () => {
     }
   }
 
-  const serverChannelConfig = await getServerChannelConfig()
-  serverChannelSettingsStore.tlsConfig = serverChannelConfig.tlsConfig ?? null
-  serverChannelSettingsStore.hostname = serverChannelConfig.hostname
-  serverChannelSettingsStore.authToken = serverChannelConfig.authToken
+  const serverChannelConfig = await serverChannelSettingsStore.refreshServerChannelConfig()
+  await discordStore.syncSavedSettingsToBackend()
 
   await serverChannelStore.initialize({
     token: serverChannelConfig.authToken || undefined,
@@ -262,6 +268,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   chatSyncLifecycle.dispose()
+  unregisterDiscordConfiguration()
 })
 
 watch(themeColorsHue, () => {

@@ -25,6 +25,7 @@ import type { AliyunRealtimeSpeechExtraOptions } from './providers/aliyun/stream
 
 import { errorMessageFrom } from '@moeru/std'
 import { isStageTamagotchi, isUrl } from '@proj-airi/stage-shared'
+import { useSensitiveStorage } from '@proj-airi/stage-shared/composables'
 import { getCachedWebGPUCapabilities, isWebGPUSupported } from '@proj-airi/stage-shared/webgpu'
 import { computedAsync, useIntervalFn, useLocalStorage } from '@vueuse/core'
 import {
@@ -223,7 +224,7 @@ export interface ProviderRuntimeState {
 }
 
 export const useProvidersStore = defineStore('providers', () => {
-  const providerCredentials = useLocalStorage<Record<string, Record<string, unknown>>>('settings/credentials/providers', {})
+  const providerCredentials = useSensitiveStorage<Record<string, Record<string, unknown>>>('settings/credentials/providers', {})
   const addedProviders = useLocalStorage<Record<string, boolean>>('settings/providers/added', {})
   const providerInstanceCache = ref<Record<string, unknown>>({})
   const { t } = useI18n()

@@ -689,9 +689,31 @@ pages:
     memory-long-term:
       description: Long-term memory specific settings and management
       title: Long-Term Memory
+      enable: Enable local memory
+      enable-description: Save reusable preferences, facts, and names from chats, then recall them in future replies.
+      refresh: Refresh
+      clear: Clear memories
+      confirm-clear: Confirm clear
+      delete: Delete
+      confirm-delete: Confirm delete
+      loading: Loading memories...
+      empty: No long-term memories are saved for the current session yet.
+      count: '{count} memories saved'
+      scope: 'Current scope: user {userId} / character {characterId} / session {sessionId}'
+      accessed: 'Recalled {count} times'
+      privacy-title: Privacy note
+      privacy-description: Memories are stored in local user data. When AIRI recalls a memory and asks the model to reply, that memory is sent to the currently configured model provider as part of the prompt.
+      roles:
+        user: User
+        assistant: AIRI
     memory-short-term:
       description: Short-term memory specific settings and management
       title: Short-Term Memory
+      status-title: Current-session context is enabled
+      status-description: AIRI keeps recent messages from the current chat window as short-term context so the conversation stays coherent.
+      long-term-title: Manage memories that can be recalled across sessions
+      long-term-description: Preferences, facts, and names are saved into long-term memory, where they can be reviewed or deleted.
+      open-long-term: Open long-term memory
     messaging-discord:
       description: Chat & voice chat over Discord
       title: Discord
@@ -700,7 +722,57 @@ pages:
       token: Bot Token
       token-description: Your Discord bot token
       token-placeholder: Enter your Discord bot token
+      clear-token: Clear saved token
       configured: Discord is properly configured!
+      security:
+        title: Security
+        allowed-channel-ids: Allowed channel IDs
+        allowed-channel-ids-description: If set, AIRI only responds in these exact Discord channels. Leave empty to allow all mentioned guild channels.
+        allowed-channel-ids-placeholder: One channel ID per line, or comma-separated
+        allow-direct-messages: Allow direct messages
+        allow-direct-messages-description: When disabled, AIRI ignores Discord DMs even if the bot can receive them.
+        admin-role-ids: Admin role IDs
+        admin-role-ids-description: Roles allowed to manage future Discord-side admin commands.
+        admin-role-ids-placeholder: One role ID per line, or comma-separated
+        memory-consent-required: Require memory consent
+        memory-consent-required-description: When enabled, Discord turns do not read from or write to long-term memory.
+        privacy-notice-enabled: Send privacy notice
+        privacy-notice-enabled-description: Sends a short notice once per Discord session before AIRI processes the first message.
+        privacy-notice-text: Privacy notice text
+        privacy-notice-text-description: Keep this short. It is sent in Discord before the first handled message for a session.
+        privacy-notice-text-placeholder: Explain server/channel/user isolation and memory behavior
+        audit-log-enabled: Enable audit logs
+        audit-log-enabled-description: Writes structured local logs for accepted, rejected, and privacy-notice Discord events.
+        message-pacing-ms: Typing pause
+        message-pacing-ms-description: Sends a typing indicator and waits this many milliseconds before forwarding Discord text to AIRI.
+        message-pacing-ms-placeholder: 600
+        rate-limit-max-messages: Rate limit count
+        rate-limit-max-messages-description: Maximum accepted Discord text messages per exact session/window. Use 0 to disable.
+        rate-limit-max-messages-placeholder: 6
+        rate-limit-window-ms: Rate limit window
+        rate-limit-window-ms-description: Window length in milliseconds for the per-session Discord rate limit.
+        rate-limit-window-ms-placeholder: 30000
+      rules:
+        title: Scoped server rules
+        guild-id: Guild ID
+        guild-id-description: Exact Discord server ID used for rule isolation.
+        guild-id-placeholder: Paste a Discord guild/server ID
+        guild-rules: Guild rules
+        guild-rules-description: Applied only when the current Discord input is from this exact server.
+        guild-rules-placeholder: Rules for this server only
+        channel-id: Channel ID
+        channel-id-description: Optional exact Discord channel ID inside the selected server.
+        channel-id-placeholder: Paste a Discord channel ID
+        channel-rules: Channel rules
+        channel-rules-description: Applied only inside this exact server and channel.
+        channel-rules-placeholder: Rules for this channel only
+        save-guild: Save server rules
+        clear-guild: Clear server rules
+        save-channel: Save channel rules
+        clear-channel: Clear channel rules
+        observed: Observed servers
+        observed-channels: Observed channels
+        no-observed: No Discord server metadata observed yet.
     speech:
       description: Speech synthesis
       sections:
