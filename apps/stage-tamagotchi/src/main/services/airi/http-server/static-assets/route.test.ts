@@ -214,4 +214,49 @@ describe('createStaticAssetRoute', () => {
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
     expect(await response.text()).toBe('')
   })
+
+  /**
+   * @example
+   * it('rejects oversized plugin assets before reading the file', async () => {})
+   */
+  it('rejects oversized plugin assets before reading the file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'airi-extension-static-assets-'))
+    tempRoots.push(root)
+
+    const assetFilePath = join(root, 'oversized.bin')
+    await writeFile(assetFilePath, new Uint8Array([1]))
+
+    const app = new H3()
+    app.get('/_airi/extensions/**', createStaticAssetRoute({
+      authorize: async () => ({
+        ok: true,
+        session: {
+          assetSessionId: 's1',
+          cookieName: createStaticAssetSessionCookieName('s1'),
+          cookieValue: 'test-token',
+          cookiePath: '/_airi/extensions/a/sessions/s1/ui',
+          expiresAt: Date.now() + 1000,
+        },
+      }),
+      refreshSession: () => undefined,
+      resolveAsset: async () => ({
+        ok: true,
+        filePath: assetFilePath,
+        size: 64 * 1024 * 1024 + 1,
+        mtime: Date.now(),
+      }),
+    }))
+
+    server = createServer(toNodeHandler(app))
+    await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', () => resolve()))
+    const address = server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+
+    const response = await fetch(`http://127.0.0.1:${port}/_airi/extensions/a/sessions/s1/ui/oversized.bin`, {
+      headers: { cookie: `${createStaticAssetSessionCookieName('s1')}=test-token` },
+    })
+
+    // @example
+    expect(response.status).toBe(413)
+  })
 })

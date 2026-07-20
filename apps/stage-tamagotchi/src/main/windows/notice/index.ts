@@ -4,7 +4,7 @@ import type { RequestWindowPayload } from '../../../shared/eventa'
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import { defineInvokeHandler } from '@moeru/eventa'
 import { safeClose } from '@proj-airi/electron-vueuse/main'
@@ -14,7 +14,9 @@ import icon from '../../../../resources/icon.png?asset'
 
 import { noticeWindowEventa } from '../../../shared/eventa'
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
+import { rendererPreloadPath } from '../shared/preload'
 import { createReferencedWindowManager } from '../shared/referenced-window'
+import { createTrustedRendererWindowPreferences, installTrustedRendererWindowSecurity } from '../shared/security'
 
 export interface NoticeWindowManager {
   open: (payload: RequestWindowPayload) => Promise<boolean>
@@ -33,15 +35,13 @@ export function setupNoticeWindowManager(params: {
       height: 600,
       show: false,
       icon,
-      webPreferences: {
-        preload: join(getElectronMainDirname(), '../preload/index.mjs'),
-        sandbox: false,
-      },
+      webPreferences: createTrustedRendererWindowPreferences({ preloadPath: rendererPreloadPath }),
     })
 
-    window.webContents.setWindowOpenHandler((details) => {
-      shell.openExternal(details.url)
-      return { action: 'deny' }
+    installTrustedRendererWindowSecurity({
+      window,
+      rendererLocation: rendererBase,
+      openExternal: async url => await shell.openExternal(url),
     })
 
     return window

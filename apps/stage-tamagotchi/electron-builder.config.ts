@@ -2,7 +2,10 @@
 
 import type { Configuration } from 'electron-builder'
 
-import { execSync } from 'node:child_process'
+import process from 'node:process'
+
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
 
 import { isMacOS } from 'std-env'
 
@@ -10,7 +13,9 @@ function hasXcode26OrAbove() {
   if (!isMacOS)
     return false
   try {
-    const output = execSync('xcodebuild -version')
+    const output = execFileSync('xcodebuild', ['-version'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
       .toString()
 
       .match(/Xcode (\d+)/)
@@ -29,6 +34,7 @@ function hasXcode26OrAbove() {
  * This is friendly to developers whose macOS and/or Xcode versions are below 26.
  */
 const useIconFormattedMacAppIcon = hasXcode26OrAbove()
+const windowsPublisherName = process.env.WINDOWS_PUBLISHER_NAME?.trim()
 if (!useIconFormattedMacAppIcon) {
   console.warn('[electron-builder/config] Warning: Xcode version is below 26. Using .icns format for macOS app icon.')
 }
@@ -46,6 +52,24 @@ export default {
   directories: {
     output: 'dist',
     buildResources: 'build',
+  },
+  afterPack: ({ electronPlatformName, appOutDir, packager }) => {
+    if (electronPlatformName !== 'darwin')
+      return
+
+    // NOTICE:
+    // electron-builder 26.8.1 unconditionally re-enables NSAllowsArbitraryLoads after merging mac.extendInfo.
+    // The root cause is configureLocalhostAts() overwriting the explicit false value during macOS packaging.
+    // Source/context: `node_modules/app-builder-lib/out/electron/electronMac.js:235-244`.
+    // Remove this hook when electron-builder preserves an explicit NSAllowsArbitraryLoads=false value.
+    const infoPlistPath = join(appOutDir, `${packager.appInfo.productFilename}.app`, 'Contents', 'Info.plist')
+    execFileSync('plutil', [
+      '-replace',
+      'NSAppTransportSecurity.NSAllowsArbitraryLoads',
+      '-bool',
+      'false',
+      infoPlistPath,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] })
   },
   // // For self-publishing, testing, and distribution after modified the code without access to
   // // an Apple Developer account, comment and uncomment the following lines.
@@ -97,6 +121,20 @@ export default {
   asarUnpack: [
     '**/*.node',
   ],
+  electronFuses: {
+    runAsNode: false,
+    enableCookieEncryption: true,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+    enableEmbeddedAsarIntegrityValidation: true,
+    onlyLoadAppFromAsar: true,
+    // NOTICE:
+    // Electron 41.2.1 cannot load a browser-specific snapshot from its stock distribution.
+    // The package only ships `v8_context_snapshot.<arch>.bin`, so enabling this fuse aborts before app startup.
+    // Source/context: verified against the packaged Electron 41.2.1 framework resources.
+    // Enable this only when the distribution includes a valid `browser_v8_context_snapshot.bin`.
+    loadBrowserProcessSpecificV8Snapshot: false,
+  },
   extraResources: [
     {
       from: '../../engines/stage-tamagotchi-godot/build/${os}',
@@ -113,6 +151,7 @@ export default {
   },
   win: {
     executableName: 'airi',
+    verifyUpdateCodeSignature: true,
     // NOTICE: Keep `channel: 'latest-${arch}'` for architecture-aware updater metadata.
     // electron-builder expands `${arch}` at publish-time (for example: `latest-x64`, `latest-arm64`),
     // and electron-updater later consumes that expanded channel to resolve platform-specific *.yml files.
@@ -122,6 +161,7 @@ export default {
       owner: 'moeru-ai',
       repo: 'airi',
       channel: 'latest-${arch}',
+      ...(windowsPublisherName ? { publisherName: windowsPublisherName } : {}),
     },
   },
   nsis: {
@@ -134,6 +174,7 @@ export default {
     allowToChangeInstallationDirectory: true,
   },
   mac: {
+    forceCodeSigning: true,
     entitlementsInherit: 'build/entitlements.mac.plist',
     // NOTICE: Same channel rule as Windows. Keep `${arch}` here so generated metadata resolves
     // to architecture-specific update feeds on macOS (for example: `latest-x64-mac.yml`, `latest-arm64-mac.yml`).
@@ -205,14 +246,14 @@ export default {
       // - Linux arm64 -> `latest-arm64-linux-arm64.yml`
       channel: 'latest-${arch}',
     },
-    extendInfo: [
-      {
-        NSMicrophoneUsageDescription: 'AIRI requires microphone access for voice interaction',
+    extendInfo: {
+      NSMicrophoneUsageDescription: 'AIRI requires microphone access for voice interaction',
+      NSCameraUsageDescription: 'AIRI requires camera access for vision understanding',
+      NSAppTransportSecurity: {
+        NSAllowsArbitraryLoads: false,
+        NSAllowsLocalNetworking: true,
       },
-      {
-        NSCameraUsageDescription: 'AIRI requires camera access for vision understanding',
-      },
-    ],
+    },
     // For self-publishing, testing, and distribution after modified the code without access to
     // an Apple Developer account, comment and uncomment the following 4 lines.
     // Later on when you obtained one, you can set up the necessary certificates and provisioning

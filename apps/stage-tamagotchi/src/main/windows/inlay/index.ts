@@ -1,7 +1,7 @@
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import { BrowserWindow, shell } from 'electron'
 import { isMacOS } from 'std-env'
@@ -10,6 +10,8 @@ import icon from '../../../../resources/icon.png?asset'
 
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
 import { currentDisplayBounds, mapForBreakpoints, resolutionBreakpoints, widthFrom } from '../shared/display'
+import { rendererPreloadPath } from '../shared/preload'
+import { createTrustedRendererWindowPreferences, installTrustedRendererWindowSecurity } from '../shared/security'
 import { spotlightLikeWindowConfig } from '../shared/window'
 import { setupInlayWindowInvokes } from './rpc/index.electron'
 
@@ -17,16 +19,14 @@ export async function setupInlayWindow(params: {
   serverChannel: ServerChannel
   i18n: I18n
 }) {
+  const rendererBase = baseUrl(resolve(getElectronMainDirname(), '..', 'renderer'))
   const window = new BrowserWindow({
     title: 'Inlay',
     width: 450,
     height: 150,
     show: false,
     icon,
-    webPreferences: {
-      preload: join(getElectronMainDirname(), '../preload/index.mjs'),
-      sandbox: false,
-    },
+    webPreferences: createTrustedRendererWindowPreferences({ preloadPath: rendererPreloadPath }),
     ...spotlightLikeWindowConfig(),
   })
 
@@ -62,14 +62,15 @@ export async function setupInlayWindow(params: {
   })
 
   window.on('ready-to-show', () => window.show())
-  window.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
+  installTrustedRendererWindowSecurity({
+    window,
+    rendererLocation: rendererBase,
+    openExternal: async url => await shell.openExternal(url),
   })
 
   await setupInlayWindowInvokes({ inlayWindow: window, serverChannel: params.serverChannel, i18n: params.i18n })
 
-  await load(window, withHashRoute(baseUrl(resolve(getElectronMainDirname(), '..', 'renderer')), '/inlay'))
+  await load(window, withHashRoute(rendererBase, '/inlay'))
 
   return window
 }

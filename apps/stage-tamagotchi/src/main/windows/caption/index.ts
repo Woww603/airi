@@ -1,14 +1,14 @@
-import type { BrowserWindow, BrowserWindowConstructorOptions, Rectangle } from 'electron'
+import type { BrowserWindow, Rectangle } from 'electron'
 import type { InferOutput } from 'valibot'
 
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
+import type { TrustedRendererLocation } from '../shared/security'
 
 import { createHash } from 'node:crypto'
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import { defineInvokeHandler } from '@moeru/eventa'
-import { createContext } from '@moeru/eventa/adapters/electron/main'
 import { animate, utils } from 'animejs'
 import { BrowserWindow as ElectronBrowserWindow, ipcMain, screen, shell } from 'electron'
 import { debounce, throttle } from 'es-toolkit'
@@ -18,10 +18,13 @@ import { boolean, number, object, optional, record, string } from 'valibot'
 import icon from '../../../../resources/icon.png?asset'
 
 import { captionGetIsFollowingWindow, captionIsFollowingWindowChanged } from '../../../shared/eventa'
+import { createWindowEventaContext } from '../../libs/electron/eventa'
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
 import { createConfig } from '../../libs/electron/persistence'
 import { createReusableWindow } from '../../libs/electron/window-manager'
 import { mapForBreakpoints, resolutionBreakpoints, widthFrom } from '../shared/display'
+import { rendererPreloadPath } from '../shared/preload'
+import { createTrustedRendererWindowPreferences, installTrustedRendererWindowSecurity } from '../shared/security'
 import { setupBaseWindowElectronInvokes, transparentWindowConfig } from '../shared/window'
 
 const captionConfigSchema = object({
@@ -103,24 +106,20 @@ function computeInitialCaptionBounds(params: { mainWindow: BrowserWindow, captio
   return { ...initial, ...params.captionOptions }
 }
 
-function createCaptionWindow(options?: BrowserWindowConstructorOptions) {
+function createCaptionWindow(rendererLocation: TrustedRendererLocation) {
   const window = new ElectronBrowserWindow({
     title: 'Caption',
     width: 480,
     height: 180,
     show: false,
     icon,
-    webPreferences: {
-      preload: join(getElectronMainDirname(), '../preload/index.mjs'),
-      sandbox: false,
-    },
+    webPreferences: createTrustedRendererWindowPreferences({ preloadPath: rendererPreloadPath }),
     // Thanks to [@HeartArmy](https://github.com/HeartArmy) for the tip implementation.
     //
     // https://github.com/electron/electron/issues/10078#issuecomment-3410164802
     // https://stackoverflow.com/questions/39835282/set-browserwindow-always-on-top-even-other-app-is-in-fullscreen-electron-mac
     type: 'panel',
     ...transparentWindowConfig(),
-    ...options,
   })
 
   // Click-through is controlled by caller via setIgnoreMouseEvents
@@ -137,9 +136,10 @@ function createCaptionWindow(options?: BrowserWindowConstructorOptions) {
   }
 
   window.on('ready-to-show', () => window.show())
-  window.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
+  installTrustedRendererWindowSecurity({
+    window,
+    rendererLocation,
+    openExternal: async url => await shell.openExternal(url),
   })
 
   return window
@@ -151,6 +151,7 @@ export function setupCaptionWindowManager(params: {
   i18n: I18n
 }) {
   const matrixHash = computeDisplayMatrixHash()
+  const rendererBase = baseUrl(resolve(getElectronMainDirname(), '..', 'renderer'))
 
   const {
     setup: setupConfig,
@@ -274,7 +275,7 @@ export function setupCaptionWindowManager(params: {
     detachMainMoveListener = undefined
   }
 
-  let eventaContext: ReturnType<typeof createContext>['context'] | undefined
+  let eventaContext: ReturnType<typeof createWindowEventaContext>['context'] | undefined
   let currentWindow: BrowserWindow | undefined
   const visibilityListeners = new Set<() => void>()
 
@@ -306,9 +307,9 @@ export function setupCaptionWindowManager(params: {
     // manage events within eventa's context system.
     ipcMain.setMaxListeners(0)
 
-    const window = createCaptionWindow()
+    const window = createCaptionWindow(rendererBase)
     currentWindow = window
-    const { context } = createContext(ipcMain, window)
+    const { context } = createWindowEventaContext(ipcMain, window)
     eventaContext = context
 
     await setupBaseWindowElectronInvokes({ context, window, serverChannel: params.serverChannel, i18n: params.i18n })
@@ -347,7 +348,7 @@ export function setupCaptionWindowManager(params: {
 
     const cleanupGetAttached = defineInvokeHandler(context, captionGetIsFollowingWindow, async () => isFollowing)
 
-    await load(window, withHashRoute(baseUrl(resolve(getElectronMainDirname(), '..', 'renderer')), '/caption'))
+    await load(window, withHashRoute(rendererBase, '/caption'))
 
     try {
       context.emit(captionIsFollowingWindowChanged, isFollowing)

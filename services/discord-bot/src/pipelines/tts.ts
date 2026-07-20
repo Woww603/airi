@@ -2,15 +2,18 @@ import type { Buffer } from 'node:buffer'
 
 import type { PipelineType } from '@huggingface/transformers'
 
-import { env } from 'node:process'
+import type { OpenAITranscriptionConfig, SpeechProviderRequestOptions } from './openai-speech'
 
-import wavefile from 'wavefile'
+import { env } from 'node:process'
 
 import { useLogg } from '@guiiai/logg'
 import { pipeline } from '@huggingface/transformers'
 import { toWav } from '@proj-airi/audio'
-import { createOpenAI } from '@xsai-ext/providers/create'
-import { generateTranscription } from '@xsai/generate-transcription'
+import { WaveFile } from 'wavefile'
+
+import { SpeechProviderRequestError, transcribeOpenAICompatible } from './openai-speech'
+
+export type { OpenAITranscriptionConfig } from './openai-speech'
 
 export class WhisperLargeV3Pipeline {
   static task: PipelineType = 'automatic-speech-recognition'
@@ -54,7 +57,7 @@ export async function transcribe(pcmBuffer: Buffer) {
   const transcriber = await WhisperLargeV3Pipeline.getInstance() as (audio: Float32Array | Float64Array) => Promise<Array<{ text: string }> | { text: string }>
   log.log('Transcribing audio')
 
-  const wav = new wavefile.WaveFile(new Uint8Array(pcmConvertedWav))
+  const wav = new WaveFile(new Uint8Array(pcmConvertedWav))
   wav.toBitDepth('32f') // Pipeline expects input as a Float32Array
   wav.toSampleRate(16000) // Whisper expects audio with a sampling rate of 16000
   const audioData = wav.getSamples()
@@ -66,30 +69,34 @@ export async function transcribe(pcmBuffer: Buffer) {
     return ''
   }
 
-  log.withField('result', text).log('Transcription result')
+  log.withField('characterCount', text.length).log('Transcription completed')
   return text
 }
 
-export async function openaiTranscribe(wavBuffer: Buffer) {
+export async function openaiTranscribe(
+  wavBuffer: Buffer,
+  config: OpenAITranscriptionConfig = {
+    apiKey: env.OPENAI_STT_API_KEY,
+    baseURL: env.OPENAI_STT_API_BASE_URL,
+    model: env.OPENAI_STT_MODEL,
+  },
+  options: SpeechProviderRequestOptions = {},
+) {
   const log = useLogg('Remote:Transcribe').useGlobalConfig()
 
   log.log('Transcribing audio...')
 
-  const wavFile = new Blob([wavBuffer], { type: 'audio/wav' })
-  const openai = createOpenAI(env.OPENAI_STT_API_KEY, env.OPENAI_STT_API_BASE_URL)
-
   try {
-    const result = await generateTranscription({
-      ...openai.transcription(env.OPENAI_STT_MODEL),
-      file: wavFile,
-    })
+    const text = await transcribeOpenAICompatible(wavBuffer, config, options)
 
-    log.withField('result', result.text).log('Transcription result')
-    return result.text
+    log.withField('characterCount', text.length).log('Transcription completed')
+    return text
   }
-  catch (err) {
-    log.withError(err).error('Failed to transcribe audio')
+  catch (error) {
+    const providerError = error instanceof SpeechProviderRequestError
+      ? error
+      : new SpeechProviderRequestError('provider-failure', 'transcription')
+    log.withField('kind', providerError.kind).error('Failed to transcribe audio')
+    throw providerError
   }
-
-  return ''
 }

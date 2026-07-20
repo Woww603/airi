@@ -6,15 +6,13 @@ import type { ServerChannel } from '../../services/airi/channel-server'
 import type { NoticeWindowManager } from '../notice'
 import type { SettingsWindowManager } from '../settings'
 
-import { dirname, join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { env } from 'node:process'
-import { fileURLToPath } from 'node:url'
 
 import clickDragPlugin from 'electron-click-drag-plugin'
 
 import { is } from '@electron-toolkit/utils'
 import { defineInvokeHandler } from '@moeru/eventa'
-import { createContext } from '@moeru/eventa/adapters/electron/main'
 import { initScreenCaptureForWindow } from '@proj-airi/electron-screen-capture/main'
 import { defu } from 'defu'
 import { BrowserWindow, ipcMain, shell } from 'electron'
@@ -24,8 +22,11 @@ import { array, number, object, optional, string } from 'valibot'
 import icon from '../../../../resources/icon.png?asset'
 
 import { electronStartDraggingWindow } from '../../../shared/eventa'
+import { createWindowEventaContext } from '../../libs/electron/eventa'
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
 import { createConfig } from '../../libs/electron/persistence'
+import { rendererPreloadPath } from '../shared/preload'
+import { createTrustedRendererWindowPreferences, installTrustedRendererWindowSecurity } from '../shared/security'
 import { setupDashboardWindowElectronInvokes } from './rpc/index.electron'
 
 const appConfigSchema = object({
@@ -62,6 +63,7 @@ export async function setupDashboardWindow(params: {
   setupConfig()
 
   const windowConfig = getConfig().windows?.find(w => w.title === 'AIRI Dashboard' && w.tag === 'dashboard')
+  const rendererBase = baseUrl(resolve(getElectronMainDirname(), '..', 'renderer'))
 
   const window = new BrowserWindow({
     title: 'AIRI Dashboard',
@@ -71,10 +73,7 @@ export async function setupDashboardWindow(params: {
     y: windowConfig?.y,
     show: false,
     icon,
-    webPreferences: {
-      preload: join(dirname(fileURLToPath(import.meta.url)), '../preload/index.mjs'),
-      sandbox: false,
-    },
+    webPreferences: createTrustedRendererWindowPreferences({ preloadPath: rendererPreloadPath }),
   })
 
   if (params.onWindowCreated) {
@@ -127,9 +126,10 @@ export async function setupDashboardWindow(params: {
   window.on('move', () => handleNewBounds(window.getBounds()))
 
   window.on('ready-to-show', () => window!.show())
-  window.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
+  installTrustedRendererWindowSecurity({
+    window,
+    rendererLocation: rendererBase,
+    openExternal: async url => await shell.openExternal(url),
   })
 
   await setupDashboardWindowElectronInvokes({
@@ -141,7 +141,7 @@ export async function setupDashboardWindow(params: {
     serverChannel: params.serverChannel,
   })
 
-  await load(window, withHashRoute(baseUrl(resolve(getElectronMainDirname(), '..', 'renderer')), '/dashboard'))
+  await load(window, withHashRoute(rendererBase, '/dashboard'))
 
   /**
    * This is a know issue (or expected behavior maybe) to Electron.
@@ -166,7 +166,7 @@ export async function setupDashboardWindow(params: {
     // manage events within eventa's context system.
     ipcMain.setMaxListeners(0)
 
-    const { context } = createContext(ipcMain, window)
+    const { context } = createWindowEventaContext(ipcMain, window)
     const cleanUpWindowDraggingInvokeHandler = defineInvokeHandler(context, electronStartDraggingWindow, handleStartDraggingWindow)
 
     window.on('closed', () => {

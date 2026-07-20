@@ -23,12 +23,16 @@ import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 import type { McpStdioManager } from '../../services/airi/mcp-servers'
 
-import { join, resolve } from 'node:path'
+import process from 'node:process'
 
-import { BrowserWindow, screen } from 'electron'
+import { resolve } from 'node:path'
+
+import { BrowserWindow, screen, shell } from 'electron'
 
 import { desktopOverlayPollHeartbeatMarker, desktopOverlayPollHeartbeatQueryParam } from '../../../shared/desktop-overlay-heartbeat'
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
+import { rendererPreloadPath } from '../shared/preload'
+import { installTrustedRendererWindowSecurity } from '../shared/security'
 import { setupDesktopOverlayElectronInvokes } from './rpc/index.electron'
 import {
   applyDesktopOverlayInputIsolation,
@@ -74,12 +78,17 @@ export async function setupDesktopOverlayWindow(params: {
   // Use primary display bounds (not just size) — the origin may be non-zero
   // when multiple displays are arranged in macOS Display Preferences.
   const primaryDisplay = screen.getPrimaryDisplay()
-  const preloadPath = join(getElectronMainDirname(), '../preload/index.mjs')
+  const rendererBase = baseUrl(resolve(getElectronMainDirname(), '..', 'renderer'))
 
   overlayWindow = new BrowserWindow(createDesktopOverlayWindowOptions({
     bounds: primaryDisplay.bounds,
-    preloadPath,
+    preloadPath: rendererPreloadPath,
   }))
+  installTrustedRendererWindowSecurity({
+    window: overlayWindow,
+    rendererLocation: rendererBase,
+    openExternal: async url => await shell.openExternal(url),
+  })
   applyDesktopOverlayInputIsolation(overlayWindow)
 
   overlayWindow.on('ready-to-show', () => {
@@ -116,7 +125,7 @@ export async function setupDesktopOverlayWindow(params: {
   await load(
     overlayWindow,
     withHashRoute(
-      baseUrl(resolve(getElectronMainDirname(), '..', 'renderer')),
+      rendererBase,
       isDesktopOverlayPollHeartbeatEnabled()
         ? `/desktop-overlay?${desktopOverlayPollHeartbeatQueryParam}=1`
         : '/desktop-overlay',

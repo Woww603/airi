@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import { BrowserWindow, shell } from 'electron'
 
@@ -6,6 +6,8 @@ import icon from '../../../../resources/icon.png?asset'
 
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
 import { createReusableWindow } from '../../libs/electron/window-manager'
+import { rendererPreloadPath } from '../shared/preload'
+import { createTrustedRendererWindowPreferences, installTrustedRendererWindowSecurity } from '../shared/security'
 
 export interface OpenDevtoolsWindowParams extends Partial<Electron.Rectangle> {
   key: string
@@ -35,11 +37,7 @@ export function setupDevtoolsWindow(): DevtoolsWindowManager {
         minHeight: 480,
         show: false,
         icon,
-        webPreferences: {
-          preload: join(getElectronMainDirname(), '../preload/index.mjs'),
-          // Preload exposes Electron APIs and needs Node access.
-          sandbox: false,
-        },
+        webPreferences: createTrustedRendererWindowPreferences({ preloadPath: rendererPreloadPath }),
       })
 
       window.on('ready-to-show', () => window.show())
@@ -47,9 +45,10 @@ export function setupDevtoolsWindow(): DevtoolsWindowManager {
         if (reusableWindows.get(key) === reusable)
           reusableWindows.delete(key)
       })
-      window.webContents.setWindowOpenHandler((details) => {
-        shell.openExternal(details.url)
-        return { action: 'deny' }
+      installTrustedRendererWindowSecurity({
+        window,
+        rendererLocation: rendererBase,
+        openExternal: async url => await shell.openExternal(url),
       })
 
       await load(window, withHashRoute(rendererBase, route))

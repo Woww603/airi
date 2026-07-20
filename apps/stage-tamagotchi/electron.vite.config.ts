@@ -16,30 +16,82 @@ import { Download } from '@proj-airi/unplugin-fetch'
 import { DownloadLive2DSDK } from '@proj-airi/unplugin-live2d-sdk'
 import { defineConfig } from 'electron-vite'
 
+import packageJSON from './package.json' with { type: 'json' }
+
 const stageUIAssetsRoot = resolve(join(import.meta.dirname, '..', '..', 'packages', 'stage-ui', 'src', 'assets'))
 const sharedCacheDir = resolve(join(import.meta.dirname, '..', '..', '.cache'))
+const bundledMainDependencies = new Set([
+  '@proj-airi/audio',
+  '@proj-airi/discord-bot',
+  '@proj-airi/server-sdk',
+  '@proj-airi/stage-shared',
+])
+const externalMainDependencies = [
+  ...Object.keys(packageJSON.dependencies).filter(dependency => !bundledMainDependencies.has(dependency)),
+  'zlib-sync',
+]
+
+/** Mirrors electron-vite dependency externalization in Vite 8's active Rolldown options. */
+function isExternalMainDependency(id: string): boolean {
+  return externalMainDependencies.some(dependency => id === dependency || id.startsWith(`${dependency}/`))
+}
+
+const discordBridgeWorkerEntry = resolve(join(import.meta.dirname, 'src', 'main', 'services', 'airi', 'discord-bridge', 'worker.ts'))
+
+/** Kept in both compatibility option names so electron-vite and Vite 8 see the same Main entry. */
+const mainBuildInput = {
+  'index': resolve(join(import.meta.dirname, 'src', 'main', 'index.ts')),
+  'discord-bridge': discordBridgeWorkerEntry,
+}
 
 export default defineConfig({
   main: {
     build: {
+      // NOTICE:
+      // electron-vite 5 writes dependency externalization to `rollupOptions.external`.
+      // Mixing that with a separate Vite 8 `rolldownOptions.input` drops the external list and bundles workspace aliases into Electron Main.
+      // Source/context: `node_modules/electron-vite/dist/chunks/lib-q6ns0vZr.js:1127-1152` and Vite 8's deprecated rollup alias.
+      // Removal condition: electron-vite writes `externalizeDeps` to `rolldownOptions`, or this app stops using its externalizer.
+      rollupOptions: {
+        input: mainBuildInput,
+      },
+      rolldownOptions: {
+        external: isExternalMainDependency,
+        input: mainBuildInput,
+      },
       externalizeDeps: {
+        exclude: [
+          // The utility entry is packaged only from `out/**`; bundle workspace
+          // sources that electron-builder intentionally excludes from the app.
+          '@proj-airi/audio',
+          '@proj-airi/discord-bot',
+          '@proj-airi/server-sdk',
+          '@proj-airi/stage-shared',
+        ],
         include: [
           // Native modules that have `__dirname` usages. Externalize to avoid bundling
           // them into ESM and causing issues in runtime.
           'electron-click-drag-plugin',
           'uiohook-napi',
+          // Optional native Discord WebSocket compression. Runtime feature
+          // detection continues without compression when it is not installed.
+          'zlib-sync',
         ],
       },
     },
     plugins: [
       {
-        // To replace `build.rolldownOptions`, as electron-vite still uses the deprecated
-        // `rollupOptions`, using `rollupOptions` and `rolldownOptions` at the same
-        // time may lead to unexpected merge results. Using `rollupOptions` to manipulate
-        // `manualChunks` also did not work. Therefore, it was transformed into a plugin
-        // declaration with the recommended `codeSplitting` option.
+        // This previously described avoiding `rollupOptions` entirely. Main entry inputs
+        // now intentionally use electron-vite's compatible `rollupOptions` path, while
+        // output chunk grouping stays here because `manualChunks` did not work under Rolldown.
         name: 'manual-chunks',
         outputOptions(options) {
+          // NOTICE:
+          // electron-vite 5 sets `build.minify: false`, but Vite 8 converts it to Rolldown's `dce-only` output mode.
+          // That incompatible mode erases the complete Discord worker after renderChunk and silently emits a zero-byte executable.
+          // Source/context: `node_modules/vite/dist/node/chunks/node.js` maps false minification while resolving output options.
+          // Removal condition: electron-vite supports Vite 8, or the repository returns to a supported Vite version.
+          options.minify = false
           options.codeSplitting = {
             groups: [
               {
@@ -65,6 +117,11 @@ export default defineConfig({
 
           return options
         },
+        generateBundle(_options, bundle) {
+          const worker = bundle['discord-bridge.js']
+          if (worker?.type !== 'chunk' || worker.code.trim().length === 0)
+            this.error('Discord bridge worker build produced an empty executable.')
+        },
       },
       Info(),
     ],
@@ -78,19 +135,6 @@ export default defineConfig({
     },
   },
 
-  preload: {
-    build: {
-      lib: {
-        entry: {
-          'index': resolve(join(import.meta.dirname, 'src', 'preload', 'index.ts')),
-          'beat-sync': resolve(join(import.meta.dirname, 'src', 'preload', 'beat-sync.ts')),
-        },
-      },
-    },
-
-    plugins: [],
-  },
-
   renderer: {
     // Thanks to [@Maqsyo](https://github.com/Maqsyo)
     // https://github.com/alex8088/electron-vite/issues/99#issuecomment-1862671727
@@ -101,6 +145,7 @@ export default defineConfig({
         input: {
           'main': resolve(join(import.meta.dirname, 'src', 'renderer', 'index.html')),
           'beat-sync': resolve(join(import.meta.dirname, 'src', 'renderer', 'beat-sync.html')),
+          'plugin-sandbox': resolve(join(import.meta.dirname, 'src', 'renderer', 'plugin-sandbox.html')),
         },
       },
     },

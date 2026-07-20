@@ -3,9 +3,9 @@ import type { BrowserWindow } from 'electron'
 import type { I18n } from '../../../libs/i18n'
 import type { ServerChannel } from '../../../services/airi/channel-server'
 
-import { createContext } from '@moeru/eventa/adapters/electron/main'
 import { ipcMain } from 'electron'
 
+import { createWindowEventaContext } from '../../../libs/electron/eventa'
 import { setupBaseWindowElectronInvokes } from '../../shared/window'
 
 export async function setupInlayWindowInvokes(params: {
@@ -18,7 +18,7 @@ export async function setupInlayWindowInvokes(params: {
   // manage events within eventa's context system.
   ipcMain.setMaxListeners(0)
 
-  const { context } = createContext(ipcMain, params.inlayWindow)
+  const { context } = createWindowEventaContext(ipcMain, params.inlayWindow)
 
   await setupBaseWindowElectronInvokes({
     context,

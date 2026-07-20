@@ -24,6 +24,8 @@ export interface StaticAssetRouteOptions {
   refreshSession: (assetSessionId: string) => StaticAssetSession | undefined
   resolveAsset: (params: { extensionId: string, assetPath: string }) => Promise<StaticAssetResolveResult>
   getType?: (ext: string) => string | undefined
+  /** Maximum file size served for one plugin asset. @default 67108864 */
+  maxAssetBytes?: number
 }
 
 /**
@@ -40,6 +42,10 @@ export interface StaticAssetRouteOptions {
  * - H3 event handler that enforces cookie auth before static file response
  */
 export function createStaticAssetRoute(options: StaticAssetRouteOptions) {
+  const maxAssetBytes = Number.isFinite(options.maxAssetBytes)
+    ? Math.min(Math.max(Math.trunc(options.maxAssetBytes!), 1), 64 * 1024 * 1024)
+    : 64 * 1024 * 1024
+
   return eventHandler(async (event) => {
     try {
       Object.entries(staticAssetSecurityHeaders).forEach(([key, value]) => {
@@ -86,6 +92,16 @@ export function createStaticAssetRoute(options: StaticAssetRouteOptions) {
         if (!resolved) {
           resolved = await options.resolveAsset({ extensionId, assetPath })
         }
+
+        if (resolved.ok && resolved.size > maxAssetBytes) {
+          throw new HttpError({
+            status: 413,
+            code: 'EXTENSION_ASSET_TOO_LARGE',
+            message: 'Payload Too Large',
+            reason: 'plugin asset exceeds configured byte limit',
+          })
+        }
+
         return resolved
       }
 

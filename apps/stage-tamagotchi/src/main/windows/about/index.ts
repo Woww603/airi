@@ -2,7 +2,7 @@ import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 import type { AutoUpdater } from '../../services/electron/auto-updater'
 
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
 import { BrowserWindow, shell } from 'electron'
 
@@ -10,6 +10,8 @@ import icon from '../../../../resources/icon.png?asset'
 
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
 import { createReusableWindow } from '../../libs/electron/window-manager'
+import { rendererPreloadPath } from '../shared/preload'
+import { createTrustedRendererWindowPreferences, installTrustedRendererWindowSecurity } from '../shared/security'
 import { setupAboutWindowElectronInvokes } from './rpc/index.electron'
 
 export function setupAboutWindowReusable(params: {
@@ -18,6 +20,7 @@ export function setupAboutWindowReusable(params: {
   serverChannel: ServerChannel
 }) {
   return createReusableWindow(async () => {
+    const rendererBase = baseUrl(resolve(getElectronMainDirname(), '..', 'renderer'))
     const window = new BrowserWindow({
       title: 'About AIRI',
       width: 670,
@@ -27,16 +30,14 @@ export function setupAboutWindowReusable(params: {
       maximizable: false,
       minimizable: false,
       icon,
-      webPreferences: {
-        preload: join(getElectronMainDirname(), '../preload/index.mjs'),
-        sandbox: false,
-      },
+      webPreferences: createTrustedRendererWindowPreferences({ preloadPath: rendererPreloadPath }),
     })
 
     window.on('ready-to-show', () => window.show())
-    window.webContents.setWindowOpenHandler((details) => {
-      shell.openExternal(details.url)
-      return { action: 'deny' }
+    installTrustedRendererWindowSecurity({
+      window,
+      rendererLocation: rendererBase,
+      openExternal: async url => await shell.openExternal(url),
     })
 
     await setupAboutWindowElectronInvokes({
@@ -46,7 +47,7 @@ export function setupAboutWindowReusable(params: {
       serverChannel: params.serverChannel,
     })
 
-    await load(window, withHashRoute(baseUrl(resolve(getElectronMainDirname(), '..', 'renderer')), '/about'))
+    await load(window, withHashRoute(rendererBase, '/about'))
 
     return window
   }).getWindow

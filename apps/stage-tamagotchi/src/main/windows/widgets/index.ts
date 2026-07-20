@@ -9,10 +9,10 @@ import type {
 import type { PluginModuleWidgetPayload } from '../../../shared/eventa/plugin/host'
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
+import type { TrustedRendererLocation } from '../shared/security'
 
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 
-import { createContext } from '@moeru/eventa/adapters/electron/main'
 import { safeClose } from '@proj-airi/electron-vueuse/main'
 import { BrowserWindow as ElectronBrowserWindow, ipcMain, screen, shell } from 'electron'
 import { clamp } from 'es-toolkit/math'
@@ -23,9 +23,12 @@ import icon from '../../../../resources/icon.png?asset'
 
 import { widgetsClearEvent, widgetsRemoveEvent, widgetsRenderEvent, widgetsUpdateEvent } from '../../../shared/eventa'
 import { normalizeWidgetWindowSize } from '../../../shared/utils/electron/windows/window-size'
+import { createWindowEventaContext } from '../../libs/electron/eventa'
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
 import { createConfig } from '../../libs/electron/persistence'
 import { createReusableWindow } from '../../libs/electron/window-manager'
+import { rendererPreloadPath } from '../shared/preload'
+import { createTrustedRendererWindowPreferences, installTrustedRendererWindowSecurity } from '../shared/security'
 import { spotlightLikeWindowConfig, transparentWindowConfig } from '../shared/window'
 import { setupWidgetsWindowInvokes } from './rpc/index.electron'
 
@@ -187,17 +190,14 @@ function resolveWindowSizeFromPayload(payload: Pick<WidgetsAddPayload, 'componen
   return normalizeWidgetWindowSize(pluginModulePayload?.windowSize)
 }
 
-function createWidgetsWindow() {
+function createWidgetsWindow(rendererLocation: TrustedRendererLocation) {
   const window = new ElectronBrowserWindow({
     title: 'Widgets',
     width: 620,
     height: 760,
     show: false,
     icon,
-    webPreferences: {
-      preload: join(getElectronMainDirname(), '../preload/index.mjs'),
-      sandbox: false,
-    },
+    webPreferences: createTrustedRendererWindowPreferences({ preloadPath: rendererPreloadPath }),
     // Top-level overlay style like other overlay windows
     type: 'panel',
     ...transparentWindowConfig(),
@@ -212,9 +212,10 @@ function createWidgetsWindow() {
     window.setWindowButtonVisibility(false)
 
   window.on('ready-to-show', () => window.show())
-  window.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
+  installTrustedRendererWindowSecurity({
+    window,
+    rendererLocation,
+    openExternal: async url => await shell.openExternal(url),
   })
 
   return window
@@ -262,7 +263,7 @@ export function setupWidgetsWindowManager(params: {
   const getConfig = (): WidgetsWindowConfig => getConfigRaw() ?? {}
   setup()
 
-  let eventaContext: ReturnType<typeof createContext>['context'] | undefined
+  let eventaContext: ReturnType<typeof createWindowEventaContext>['context'] | undefined
   const widgetRecords = new Map<string, WidgetRecord>()
   const widgetEventListeners = new Set<(event: { id: string, event: Record<string, unknown> }) => void>()
   const windowContexts = new Map<string, WidgetWindowContext>()
@@ -283,9 +284,9 @@ export function setupWidgetsWindowManager(params: {
     // manage events within eventa's context system.
     ipcMain.setMaxListeners(0)
 
-    const window = createWidgetsWindow()
+    const window = createWidgetsWindow(rendererBase)
     activeWidgetsWindow = window
-    const { context } = createContext(ipcMain, window)
+    const { context } = createWindowEventaContext(ipcMain, window)
     eventaContext = context
 
     const saved = getConfig().bounds
