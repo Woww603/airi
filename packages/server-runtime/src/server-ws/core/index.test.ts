@@ -4,8 +4,105 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createConsumerOrchestrator,
+  createServerWsTrafficGuard,
+  isServerWsOriginAllowed,
   selectConsumerPeerId,
 } from '.'
+
+/**
+ * @example
+ * describe('server-ws traffic guard', () => {})
+ */
+describe('server-ws traffic guard', () => {
+  /**
+   * @example
+   * it('bounds total and unauthenticated connections', () => {})
+   */
+  it('bounds total and unauthenticated connections', () => {
+    const guard = createServerWsTrafficGuard({
+      maxConnections: 2,
+      maxMessagesPerWindow: 10,
+      maxUnauthenticatedConnections: 1,
+      messageWindowMs: 1_000,
+    })
+
+    // @example
+    expect(guard.open('peer-1', false)).toEqual({ accepted: true })
+    // @example
+    expect(guard.open('peer-2', false)).toEqual({ accepted: false, reason: 'unauthenticated-connection-limit' })
+
+    guard.authenticate('peer-1')
+
+    // @example
+    expect(guard.open('peer-2', false)).toEqual({ accepted: true })
+    // @example
+    expect(guard.open('peer-3', true)).toEqual({ accepted: false, reason: 'connection-limit' })
+  })
+
+  /**
+   * @example
+   * it('rate-limits each peer and resets the bounded window', () => {})
+   */
+  it('rate-limits each peer and resets the bounded window', () => {
+    let now = 100
+    const guard = createServerWsTrafficGuard({
+      maxConnections: 2,
+      maxMessagesPerWindow: 2,
+      maxUnauthenticatedConnections: 1,
+      messageWindowMs: 1_000,
+      now: () => now,
+    })
+    guard.open('peer-1', true)
+
+    // @example
+    expect(guard.acceptMessage('peer-1')).toEqual({ accepted: true })
+    // @example
+    expect(guard.acceptMessage('peer-1')).toEqual({ accepted: true })
+    // @example
+    expect(guard.acceptMessage('peer-1')).toEqual({ accepted: false, reason: 'message-rate-limit' })
+
+    now = 1_100
+
+    // @example
+    expect(guard.acceptMessage('peer-1')).toEqual({ accepted: true })
+  })
+})
+
+/**
+ * @example
+ * describe('server-ws origin policy', () => {})
+ */
+describe('server-ws origin policy', () => {
+  /**
+   * @example
+   * it('allows local app origins and rejects arbitrary browser origins', () => {})
+   */
+  it('allows local app origins and rejects arbitrary browser origins', () => {
+    // @example
+    expect(isServerWsOriginAllowed(undefined, [])).toBe(true)
+    // @example
+    expect(isServerWsOriginAllowed('file://', [])).toBe(true)
+    // @example
+    expect(isServerWsOriginAllowed('null', [])).toBe(true)
+    // @example
+    expect(isServerWsOriginAllowed('http://localhost:5173', [])).toBe(true)
+    // @example
+    expect(isServerWsOriginAllowed('https://attacker.example', [])).toBe(false)
+  })
+
+  /**
+   * @example
+   * it('accepts an exact configured browser origin without wildcard matching', () => {})
+   */
+  it('accepts an exact configured browser origin without wildcard matching', () => {
+    const allowedOrigins = ['https://airi.example']
+
+    // @example
+    expect(isServerWsOriginAllowed('https://airi.example', allowedOrigins)).toBe(true)
+    // @example
+    expect(isServerWsOriginAllowed('https://sub.airi.example', allowedOrigins)).toBe(false)
+  })
+})
 
 describe('server-ws consumer selection', () => {
   it('selects highest priority then earliest registration', () => {

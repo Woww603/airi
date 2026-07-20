@@ -12,6 +12,14 @@ interface MockBroadcastMessageEvent<T> {
 
 type MockListener = (event: MockBroadcastMessageEvent<unknown>) => void
 
+interface MockChatMessage {
+  role: string
+  content: string
+  id?: string
+  slices?: Array<{ type: string, text?: string }>
+  tool_results?: unknown[]
+}
+
 class MockBroadcastChannel {
   static channels = new Map<string, Set<MockBroadcastChannel>>()
 
@@ -66,11 +74,15 @@ class MockBroadcastChannel {
 
 interface MockState {
   activeSessionId: Ref<string>
-  sessionMessages: Ref<Record<string, Array<{ role: string, content: string }>>>
+  sessionMessages: Ref<Record<string, MockChatMessage[]>>
   sessionMetas: Ref<Record<string, unknown>>
   applyRemoteSnapshot: ReturnType<typeof vi.fn>
   setSessionMessages: ReturnType<typeof vi.fn>
   getSessionMessages: ReturnType<typeof vi.fn>
+  editSessionMessage: ReturnType<typeof vi.fn>
+  setSessionMessageExcluded: ReturnType<typeof vi.fn>
+  setAssistantResponseAlternatives: ReturnType<typeof vi.fn>
+  selectAssistantResponseAlternative: ReturnType<typeof vi.fn>
   ingest: ReturnType<typeof vi.fn>
 }
 
@@ -89,6 +101,10 @@ vi.mock('@proj-airi/stage-ui/stores/chat/session-store', () => ({
     })),
     getSessionMessages: mockState.getSessionMessages,
     setSessionMessages: mockState.setSessionMessages,
+    editSessionMessage: mockState.editSessionMessage,
+    setSessionMessageExcluded: mockState.setSessionMessageExcluded,
+    setAssistantResponseAlternatives: mockState.setAssistantResponseAlternatives,
+    selectAssistantResponseAlternative: mockState.selectAssistantResponseAlternative,
   }),
 }))
 
@@ -147,13 +163,13 @@ describe('useChatSyncStore authority ingest failures', async () => {
     vi.restoreAllMocks()
 
     const activeSessionId = ref('session-1')
-    const sessionMessages = ref<Record<string, Array<{ role: string, content: string }>>>({
+    const sessionMessages = ref<Record<string, MockChatMessage[]>>({
       'session-1': [{ role: 'system', content: 'init' }],
     })
     const sessionMetas = ref<Record<string, unknown>>({})
     const applyRemoteSnapshot = vi.fn((snapshot: {
       activeSessionId: string
-      sessionMessages: Record<string, Array<{ role: string, content: string }>>
+      sessionMessages: Record<string, MockChatMessage[]>
       sessionMetas: Record<string, unknown>
     }) => {
       activeSessionId.value = snapshot.activeSessionId
@@ -161,7 +177,7 @@ describe('useChatSyncStore authority ingest failures', async () => {
       sessionMetas.value = snapshot.sessionMetas
     })
 
-    const setSessionMessages = vi.fn((sessionId: string, next: Array<{ role: string, content: string }>) => {
+    const setSessionMessages = vi.fn((sessionId: string, next: MockChatMessage[]) => {
       sessionMessages.value[sessionId] = next
     })
 
@@ -170,6 +186,10 @@ describe('useChatSyncStore authority ingest failures', async () => {
     const ingest = vi.fn(async () => {
       throw new Error('Remote sent 403 response: {"error":{"message":"This model is not available in your region.","code":403}}')
     })
+    const editSessionMessage = vi.fn(() => true)
+    const setSessionMessageExcluded = vi.fn(() => true)
+    const setAssistantResponseAlternatives = vi.fn(() => true)
+    const selectAssistantResponseAlternative = vi.fn(() => true)
 
     mockState = {
       activeSessionId,
@@ -178,6 +198,10 @@ describe('useChatSyncStore authority ingest failures', async () => {
       applyRemoteSnapshot,
       setSessionMessages,
       getSessionMessages,
+      editSessionMessage,
+      setSessionMessageExcluded,
+      setAssistantResponseAlternatives,
+      selectAssistantResponseAlternative,
       ingest,
     }
 
@@ -340,7 +364,19 @@ describe('useChatSyncStore authority ingest failures', async () => {
       { role: 'assistant', content: 'answer-2' },
       { role: 'user', content: 'hello-3' },
     ]
-    mockState.ingest.mockResolvedValueOnce(undefined)
+    mockState.ingest.mockImplementationOnce(async (_text: string, _options: unknown, sessionId: string) => {
+      mockState.sessionMessages.value[sessionId] = [
+        ...(mockState.sessionMessages.value[sessionId] ?? []),
+        { role: 'user', content: 'hello-2', id: 'regenerated-user' },
+        {
+          role: 'assistant',
+          content: 'answer-2b',
+          id: 'regenerated-assistant',
+          slices: [{ type: 'text', text: 'answer-2b' }],
+          tool_results: [],
+        },
+      ]
+    })
 
     const store = useChatSyncStore()
     store.initialize('authority')
@@ -365,8 +401,59 @@ describe('useChatSyncStore authority ingest failures', async () => {
       ])
       expect(mockState.ingest).toHaveBeenCalledWith('hello-2', expect.any(Object), 'session-1')
     })
+    expect(mockState.setAssistantResponseAlternatives).toHaveBeenCalledWith(expect.objectContaining({
+      alternatives: [
+        expect.objectContaining({ content: 'answer-2' }),
+        expect.objectContaining({ content: 'answer-2b', id: 'regenerated-assistant' }),
+      ],
+      messageId: 'regenerated-assistant',
+      sessionId: 'session-1',
+    }))
 
     peer.close()
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * Authority message edit, prompt exclusion, and candidate selection commands mutate the session store.
+   */
+  it('routes local message controls through the authority session boundary', async () => {
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await store.requestEditMessage({
+      content: 'edited text',
+      messageId: 'message-1',
+      sessionId: 'session-1',
+    })
+    await store.requestSetMessageExcluded({
+      excluded: true,
+      messageId: 'message-1',
+      sessionId: 'session-1',
+    })
+    await store.requestSelectResponseAlternative({
+      alternativeIndex: 1,
+      messageId: 'assistant-1',
+      sessionId: 'session-1',
+    })
+
+    expect(mockState.editSessionMessage).toHaveBeenCalledWith({
+      content: 'edited text',
+      messageId: 'message-1',
+      sessionId: 'session-1',
+    })
+    expect(mockState.setSessionMessageExcluded).toHaveBeenCalledWith({
+      excluded: true,
+      messageId: 'message-1',
+      sessionId: 'session-1',
+    })
+    expect(mockState.selectAssistantResponseAlternative).toHaveBeenCalledWith({
+      alternativeIndex: 1,
+      messageId: 'assistant-1',
+      sessionId: 'session-1',
+    })
+
     store.dispose()
   })
 

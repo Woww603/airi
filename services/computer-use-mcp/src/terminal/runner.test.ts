@@ -37,6 +37,14 @@ describe('createLocalShellRunner', () => {
   })
 
   it('bounds captured stdout and stderr for large command output', async () => {
+    // ROOT CAUSE:
+    //
+    // A login shell may emit startup diagnostics before the command runs. The
+    // previous exact stderr-length assertion treated that valid shell output as
+    // runner corruption, which made the test depend on the user's zsh setup.
+    //
+    // The runner must count those diagnostics, so stderr can exceed the command
+    // payload while the captured value remains correctly bounded.
     const runner = createLocalShellRunner(createTestConfig())
     const result = await runner.execute({
       command: `${JSON.stringify(execPath)} -e "process.stdout.write('o'.repeat(20000)); process.stderr.write('e'.repeat(20000))"`,
@@ -48,7 +56,7 @@ describe('createLocalShellRunner', () => {
     expect(result.stdoutTruncated).toBe(true)
     expect(result.stderrTruncated).toBe(true)
     expect(result.stdoutOriginalLength).toBe(20_000)
-    expect(result.stderrOriginalLength).toBe(20_000)
+    expect(result.stderrOriginalLength).toBeGreaterThanOrEqual(20_000)
   })
 
   it('resets the tracked state', async () => {

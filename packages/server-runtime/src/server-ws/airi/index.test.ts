@@ -13,7 +13,17 @@ describe('airi websocket protocol codec', () => {
   it('parses superjson encoded events', () => {
     const event: WebSocketEvent = {
       type: 'module:authenticate',
-      data: { token: 'secret' },
+      data: {
+        module: {
+          identity: {
+            id: 'test-plugin-1',
+            kind: 'plugin',
+            plugin: { id: 'test-plugin' },
+          },
+          name: 'test-plugin',
+        },
+        token: 'secret',
+      },
       metadata: {
         source: {
           kind: 'plugin',
@@ -30,7 +40,17 @@ describe('airi websocket protocol codec', () => {
   it('falls back to plain JSON events', () => {
     const event: WebSocketEvent = {
       type: 'module:authenticate',
-      data: { token: 'secret' },
+      data: {
+        module: {
+          identity: {
+            id: 'test-plugin-1',
+            kind: 'plugin',
+            plugin: { id: 'test-plugin' },
+          },
+          name: 'test-plugin',
+        },
+        token: 'secret',
+      },
       metadata: {
         source: {
           kind: 'plugin',

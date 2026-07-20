@@ -15,6 +15,7 @@ import WebSocket from 'ws'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { errorMessageFrom } from '@moeru/std'
 
 import { hasCompletedChatTurn } from '../e2e/chat-turn'
 import {
@@ -639,7 +640,7 @@ async function main() {
       chatSurfaceMode = 'same-window-route'
       addTimeline('chat-open-fallback', {
         mode: 'same-window-route',
-        reason: error instanceof Error ? error.message : String(error),
+        reason: errorMessageFrom(error) ?? String(error),
       })
 
       await mainTargetClient.evaluate(`window.__AIRI_DEBUG__.navigateTo('/chat')`)

@@ -4,10 +4,12 @@ export default defineConfig({
   test: {
     projects: [
       'apps/server',
+      'apps/discord-dashboard',
       'apps/ui-server-auth',
       'apps/stage-tamagotchi',
       'packages/audio-pipelines-transcribe',
       'packages/cap-vite',
+      'packages/ccc',
       'packages/core-agent',
       'packages/vishot-runner-browser',
       'packages/plugin-sdk',

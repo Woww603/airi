@@ -15,6 +15,7 @@ import WebSocket from 'ws'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { errorMessageFrom } from '@moeru/std'
 
 import {
   prioritizeInspectableAiriTargets,
@@ -961,7 +962,7 @@ async function main() {
       }
       catch (error) {
         addTimeline('discord-client-open-skipped', {
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessageFrom(error) ?? String(error),
         })
       }
     }

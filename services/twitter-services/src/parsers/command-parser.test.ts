@@ -74,7 +74,13 @@ describe('command Parser', () => {
     const result = parseTwitterCommand('get timeline count:  15  ')
 
     expect(result).not.toBeNull()
-    expect(result).toMatchObject({ command: 'get timeline', content: 'count:  15  ', count: 15 })
+    // ROOT CAUSE:
+    //
+    // The parser has always normalized command content with `trim()`, but this
+    // assertion expected timeline commands alone to preserve trailing spaces.
+    // The parsed count was correct; the stale content expectation made the
+    // previously unregistered service test fail when it was finally executed.
+    expect(result).toMatchObject({ command: 'get timeline', content: 'count:  15', count: 15 })
   })
 
   it('should reject unknown commands', () => {

@@ -286,6 +286,14 @@ inv;
   })
 
   it('does not pass a timeout to llmAgent calls', async () => {
+    // ROOT CAUSE:
+    //
+    // The timeout guard was intentionally removed from Brain, but a later
+    // refactor left a fixed timeoutMs on the delegated LLMAgent call. This
+    // silently restored the removed provider deadline and contradicted the
+    // public call boundary exercised here.
+    //
+    // Brain now owns cancellation only and leaves provider deadlines unset.
     const deps: any = createDeps('await chat("hi")')
     deps.llmAgent.callLLM = vi.fn(async () => ({
       text: 'await chat("hi")',

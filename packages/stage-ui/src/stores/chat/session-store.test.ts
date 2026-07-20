@@ -1,3 +1,4 @@
+import type { ChatResponseAlternative } from '../../types/chat'
 import type { ChatSessionMeta, ChatSessionRecord, ChatSessionsIndex } from '../../types/chat-session'
 
 import { createPinia, setActivePinia } from 'pinia'
@@ -292,5 +293,157 @@ describe('chat-session-store · loadSession vs concurrent deleteSession', () => 
 
     // Without the fix, sess-1 reappears here.
     expect(store.sessionMetas['sess-1']).toBeUndefined()
+  })
+})
+
+/**
+ * @example
+ * describe('chat-session-store message controls', () => {})
+ */
+describe('chat-session-store message controls', () => {
+  /**
+   * @example
+   * A user edits text without losing an attached image, then excludes the message from future prompts.
+   */
+  it('edits message text without dropping attachments and persists prompt exclusion state', () => {
+    const store = useChatSessionStore()
+    store.applyRemoteSnapshot({
+      activeSessionId: 'session-controls',
+      sessionMessages: {
+        'session-controls': [
+          {
+            content: [
+              { type: 'text', text: 'before edit' },
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+            ],
+            id: 'user-1',
+            role: 'user',
+          },
+        ],
+      },
+      sessionMetas: {},
+    })
+
+    expect(store.editSessionMessage({
+      content: 'after edit',
+      messageId: 'user-1',
+      sessionId: 'session-controls',
+    })).toBe(true)
+    expect(store.setSessionMessageExcluded({
+      excluded: true,
+      messageId: 'user-1',
+      sessionId: 'session-controls',
+    })).toBe(true)
+
+    expect(store.getSessionMessages('session-controls')[0]).toMatchObject({
+      content: [
+        { type: 'text', text: 'after edit' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' } },
+      ],
+      excludedFromPrompt: true,
+    })
+  })
+
+  /**
+   * @example
+   * Two preserved assistant candidates can be selected without deleting either candidate.
+   */
+  it('stores complete assistant alternatives and switches the active candidate', () => {
+    const alternatives: ChatResponseAlternative[] = [
+      {
+        content: 'first answer',
+        id: 'alternative-1',
+        slices: [{ type: 'text', text: 'first answer' }],
+        tool_results: [],
+      },
+      {
+        content: 'second answer',
+        id: 'alternative-2',
+        slices: [{ type: 'text', text: 'second answer' }],
+        tool_results: [],
+      },
+    ]
+    const store = useChatSessionStore()
+    store.applyRemoteSnapshot({
+      activeSessionId: 'session-alternatives',
+      sessionMessages: {
+        'session-alternatives': [
+          {
+            content: 'second answer',
+            id: 'assistant-1',
+            role: 'assistant',
+            slices: [{ type: 'text', text: 'second answer' }],
+            tool_results: [],
+          },
+        ],
+      },
+      sessionMetas: {},
+    })
+
+    expect(store.setAssistantResponseAlternatives({
+      alternatives,
+      messageId: 'assistant-1',
+      sessionId: 'session-alternatives',
+    })).toBe(true)
+    expect(store.selectAssistantResponseAlternative({
+      alternativeIndex: 0,
+      messageId: 'assistant-1',
+      sessionId: 'session-alternatives',
+    })).toBe(true)
+
+    expect(store.getSessionMessages('session-alternatives')[0]).toMatchObject({
+      activeResponseAlternative: 0,
+      content: 'first answer',
+      responseAlternatives: alternatives,
+      slices: [{ type: 'text', text: 'first answer' }],
+    })
+  })
+
+  /**
+   * @example
+   * Session persona, author note, and summary are normalized and retained together.
+   */
+  it('persists normalized session prompt controls with summary provenance', () => {
+    const meta: ChatSessionMeta = {
+      characterId: 'default',
+      createdAt: 1,
+      sessionId: 'session-profile',
+      updatedAt: 1,
+      userId: 'local',
+    }
+    const store = useChatSessionStore()
+    store.applyRemoteSnapshot({
+      activeSessionId: 'session-profile',
+      sessionMessages: {
+        'session-profile': [{ content: 'hello', id: 'message-1', role: 'user' }],
+      },
+      sessionMetas: { 'session-profile': meta },
+    })
+
+    expect(store.updateSessionPromptProfile('session-profile', {
+      authorNote: '  Keep the scene quiet.  ',
+      rollingSummary: {
+        content: '  The user arrived at the observatory.  ',
+        sourceMessageIds: ['message-1', 'message-1'],
+        updatedAt: 42,
+      },
+      userPersona: {
+        description: '  Prefers concise answers.  ',
+        name: '  Owen  ',
+      },
+    })).toBe(true)
+
+    expect(store.getSessionPromptProfile('session-profile')).toEqual({
+      authorNote: 'Keep the scene quiet.',
+      rollingSummary: {
+        content: 'The user arrived at the observatory.',
+        sourceMessageIds: ['message-1'],
+        updatedAt: 42,
+      },
+      userPersona: {
+        description: 'Prefers concise answers.',
+        name: 'Owen',
+      },
+    })
   })
 })

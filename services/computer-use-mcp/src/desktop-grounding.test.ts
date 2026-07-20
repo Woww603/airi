@@ -133,7 +133,7 @@ describe('buildTargetCandidates', () => {
     const chromeCount = candidates.filter(c => c.source === 'chrome_dom').length
     const axCount = candidates.filter(c => c.source === 'ax').length
     expect(chromeCount).toBe(1)
-    // AX candidate may or may not be deduped depending on exact IoU
+    expect(axCount).toBe(0)
   })
 
   it('no sources: returns empty', () => {
@@ -188,7 +188,16 @@ describe('buildTargetCandidates', () => {
 })
 
 describe('captureDesktopGrounding', () => {
-  it('retries window observation with app filter when Chrome is foreground and the generic list misses it', async () => {
+  // ROOT CAUSE:
+  //
+  // The background desktop scheduler changed Chrome discovery from a
+  // foreground-only policy to an availability policy, but left the old block
+  // in place. The duplicate chromeWindowBounds declaration made this module
+  // fail to parse before any grounding test could run.
+  //
+  // We fixed this by retaining the availability-based lookup and removing the
+  // obsolete foreground-only block.
+  it('retries window observation with an app filter when the generic list misses Chrome', async () => {
     const chromeWindow = { x: 0, y: 0, width: 1920, height: 1080 }
     const chromeElements = [
       { tag: 'button', text: 'Submit', rect: { x: 10, y: 10, w: 80, h: 30 } },
@@ -203,8 +212,8 @@ describe('captureDesktopGrounding', () => {
       }),
       observeWindows: vi.fn()
         .mockResolvedValueOnce({
-          frontmostAppName: 'Google Chrome',
-          frontmostWindowTitle: 'Chrome',
+          frontmostAppName: 'Finder',
+          frontmostWindowTitle: 'Desktop',
           windows: [
             {
               appName: 'Control Center',
@@ -215,8 +224,8 @@ describe('captureDesktopGrounding', () => {
           observedAt: new Date().toISOString(),
         })
         .mockResolvedValueOnce({
-          frontmostAppName: 'Google Chrome',
-          frontmostWindowTitle: 'Chrome',
+          frontmostAppName: 'Finder',
+          frontmostWindowTitle: 'Desktop',
           windows: [
             {
               appName: 'Google Chrome',

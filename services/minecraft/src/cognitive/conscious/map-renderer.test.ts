@@ -77,6 +77,7 @@ describe('map-renderer', () => {
       expect(result.center).toEqual({ x: 0, y: 64, z: 0 })
       expect(result.radius).toBe(3)
       expect(result.map).toContain('@') // Bot marker
+      expect(result.map.match(/@/gu)).toHaveLength(1)
     })
 
     it('classifies ground blocks correctly', () => {

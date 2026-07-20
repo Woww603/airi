@@ -163,6 +163,7 @@ describe('registerComputerUseTools: PTY approval bridge', () => {
 
   it('executes approved pending desktop_ensure_chrome through the Chrome session manager', async () => {
     ;(runtime.chromeSessionManager.ensureAgentWindow as any).mockResolvedValue({
+      ensureOutcome: 'launched',
       wasAlreadyRunning: false,
       windowId: 'chrome-window-1',
       pid: 4242,

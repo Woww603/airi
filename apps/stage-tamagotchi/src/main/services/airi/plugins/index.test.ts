@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
 import { defineInvoke } from '@moeru/eventa'
-import { PluginHost } from '@proj-airi/plugin-sdk/plugin-host'
+import { createFileSystemPluginRuntimeSessionFactory, PluginHost } from '@proj-airi/plugin-sdk/plugin-host'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import {
@@ -362,13 +362,19 @@ function createWidgetsManagerDouble() {
 
 async function setupPluginHostForTest() {
   const widgets = createWidgetsManagerDouble()
-  const service = await setupPluginHostService({ widgetsManager: widgets.widgetsManager })
+  const service = await setupPluginHostService({
+    widgetsManager: widgets.widgetsManager,
+    runtimeSessionFactory: createFileSystemPluginRuntimeSessionFactory(),
+  })
   return { service, ...widgets }
 }
 
 async function setupPluginHostHostServiceForTest() {
   const widgets = createWidgetsManagerDouble()
-  const service = await setupPluginHostHostService({ widgetsManager: widgets.widgetsManager })
+  const service = await setupPluginHostHostService({
+    widgetsManager: widgets.widgetsManager,
+    runtimeSessionFactory: createFileSystemPluginRuntimeSessionFactory(),
+  })
   return { service, ...widgets }
 }
 
@@ -1218,7 +1224,10 @@ describe('setupPluginHost', () => {
       publishWidgetEvent: vi.fn((_id: string, _event: Record<string, unknown>) => {}),
       onWidgetEvent: vi.fn((_listener: (event: { id: string, event: Record<string, unknown> }) => void) => () => {}),
     }
-    const service = await setupPluginHostService({ widgetsManager })
+    const service = await setupPluginHostService({
+      widgetsManager,
+      runtimeSessionFactory: createFileSystemPluginRuntimeSessionFactory(),
+    })
     const pluginDir = join(pluginsDir, 'test-plugin-gamelets-stop-cleanup-reject')
     await mkdir(pluginDir, { recursive: true })
     const entrypointPath = await writeEntrypoint({

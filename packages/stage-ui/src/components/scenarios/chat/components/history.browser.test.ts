@@ -57,15 +57,22 @@ function createHarness(messages: ChatHistoryItem[]) {
     },
     setup() {
       const lastRetryIndex = shallowRef('none')
+      const selectedAlternativeIndex = shallowRef('none')
 
       function handleRetryMessage(payload: { index: number }) {
         lastRetryIndex.value = String(payload.index)
       }
 
+      function handleSelectResponseAlternative(payload: { alternativeIndex: number }) {
+        selectedAlternativeIndex.value = String(payload.alternativeIndex)
+      }
+
       return {
         handleRetryMessage,
+        handleSelectResponseAlternative,
         lastRetryIndex,
         messages,
+        selectedAlternativeIndex,
       }
     },
     template: `
@@ -73,8 +80,10 @@ function createHarness(messages: ChatHistoryItem[]) {
         <ChatHistory
           :messages="messages"
           @retry-message="handleRetryMessage"
+          @select-response-alternative="handleSelectResponseAlternative"
         />
         <output aria-label="retry-index">{{ lastRetryIndex }}</output>
+        <output aria-label="alternative-index">{{ selectedAlternativeIndex }}</output>
       </div>
     `,
   })
@@ -132,5 +141,51 @@ describe('chatHistory retry actions', () => {
     })
 
     expect(document.body.textContent).not.toContain('Retry')
+  })
+})
+
+/**
+ * @example
+ * describe('ChatHistory response alternatives', () => {})
+ */
+describe('chatHistory response alternatives', () => {
+  /**
+   * @example
+   * Clicking the previous response control emits the selected candidate index.
+   */
+  it('emits candidate selection from assistant swipe controls', async () => {
+    const messages: ChatHistoryItem[] = [
+      {
+        activeResponseAlternative: 1,
+        content: 'second answer',
+        responseAlternatives: [
+          {
+            content: 'first answer',
+            id: 'candidate-1',
+            slices: [{ type: 'text', text: 'first answer' }],
+            tool_results: [],
+          },
+          {
+            content: 'second answer',
+            id: 'candidate-2',
+            slices: [{ type: 'text', text: 'second answer' }],
+            tool_results: [],
+          },
+        ],
+        role: 'assistant',
+        slices: [{ type: 'text', text: 'second answer' }],
+        tool_results: [],
+      },
+    ]
+
+    const screen = await render(createHarness(messages), {
+      global: {
+        plugins: [createTestI18n()],
+      },
+    })
+
+    await screen.getByRole('button', { name: 'Previous response' }).click()
+
+    await expect.element(screen.getByLabelText('alternative-index')).toHaveTextContent('0')
   })
 })

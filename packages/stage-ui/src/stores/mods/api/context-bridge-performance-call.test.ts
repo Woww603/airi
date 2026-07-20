@@ -41,6 +41,21 @@ vi.mock('../../chat/context-store', () => ({
   }),
 }))
 
+// ROOT CAUSE:
+//
+// Discord memory support added eager context-bridge store dependencies. This
+// focused performance-call test did not isolate them, so store construction
+// escaped into the unrelated airi-card/i18n component context and failed before
+// the behavior under test ran.
+//
+// Keep the new direct dependencies explicit here so this suite continues to
+// test only Spark performance dispatch behavior.
+vi.mock('../../chat/memory-store', () => ({
+  useChatMemoryStore: () => ({
+    clearCurrentScope: vi.fn(async () => undefined),
+  }),
+}))
+
 vi.mock('../../devtools/context-observability', () => ({
   useContextObservabilityStore: () => ({
     recordLifecycle: vi.fn(),
@@ -51,6 +66,16 @@ vi.mock('../../modules/consciousness', () => ({
   useConsciousnessStore: () => ({
     activeProvider: ref(undefined),
     activeModel: ref(undefined),
+  }),
+}))
+
+vi.mock('../../modules/discord', () => ({
+  useDiscordStore: () => ({
+    getLongTermMemoryConsent: vi.fn(),
+    memoryConsentRequired: true,
+    rememberObservedDiscordScope: vi.fn(),
+    setLongTermMemoryConsent: vi.fn(),
+    syncSavedSettingsToBackend: vi.fn(),
   }),
 }))
 

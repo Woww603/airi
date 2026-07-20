@@ -389,7 +389,7 @@ describe('engine temporal semantics', () => {
     expect(secondSnapshot[stateKey]?.total).toBe(2)
   })
 
-  it('should ignore out-of-order timestamps to keep temporal detection deterministic', () => {
+  it('should ignore out-of-order timestamps without emitting detector log noise', () => {
     const { engine, eventBus, logger, signals } = createRuleEngineForTest(buildArmSwingRuleYaml('sliding'))
 
     emitArmSwingEvent(eventBus, { entityId: 'alice', timestamp: 200 })
@@ -397,7 +397,12 @@ describe('engine temporal semantics', () => {
     emitArmSwingEvent(eventBus, { entityId: 'alice', timestamp: 250 })
 
     expect(signals).toHaveLength(1)
-    expect(logger.warn).toHaveBeenCalledTimes(1)
+    // ROOT CAUSE:
+    //
+    // Detector decision logging was deliberately removed because high-volume
+    // perception streams flooded logs. The debug snapshot remains the stable
+    // observability boundary, so the stale warning assertion was invalid.
+    expect(logger.warn).not.toHaveBeenCalled()
 
     expect(engine.getDetectorDecisionSnapshot()).toEqual([
       {
@@ -436,29 +441,7 @@ describe('engine temporal semantics', () => {
       .map(([fields]) => fields as { decision?: string } | undefined)
       .filter((fields): fields is { decision: string } => Boolean(fields?.decision))
 
-    expect(decisionLogPayloads).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        ruleName: 'test-arm-swing-sliding',
-        mode: 'sliding',
-        groupKey: 'alice',
-        count: 1,
-        threshold: 2,
-        windowMs: 1000,
-        eventTs: 100,
-        decision: 'ignored_out_of_order',
-      }),
-      expect.objectContaining({
-        ruleName: 'test-arm-swing-sliding',
-        mode: 'sliding',
-        groupKey: 'alice',
-        count: 2,
-        threshold: 2,
-        windowMs: 1000,
-        eventTs: 250,
-        decision: 'fired',
-      }),
-    ]))
-    expect(decisionLogPayloads.some(fields => fields.decision === 'matched_not_fired')).toBe(false)
+    expect(decisionLogPayloads).toEqual([])
   })
 
   it('should default detector mode to sliding when mode is omitted', () => {

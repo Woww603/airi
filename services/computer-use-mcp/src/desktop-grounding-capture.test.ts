@@ -104,4 +104,66 @@ describe('captureDesktopGrounding', () => {
 
     expect(snapshot.targetCandidates.some(candidate => candidate.source === 'chrome_dom')).toBe(false)
   })
+
+  // ROOT CAUSE:
+  //
+  // Chrome window bounds were resolved before semantic capture and the first
+  // Chrome window was accepted without a title hint. Once bounds existed, the
+  // captured page title was never used to select the matching Chrome window,
+  // so DOM coordinates could be projected onto a different browser window.
+  //
+  // We fixed this by preferring a page-title match after semantic capture and
+  // only falling back to the first Chrome window when no title match exists.
+  it('projects Chrome semantics onto the window matching the captured page title', async () => {
+    captureAXTreeMock.mockResolvedValue(makeAxSnapshot())
+    captureChromeSemanticsMock.mockResolvedValue({
+      pageUrl: 'https://example.com/target',
+      pageTitle: 'Target Page',
+      interactiveElements: [
+        {
+          tag: 'button',
+          text: 'Submit',
+          rect: { x: 20, y: 20, w: 80, h: 30 },
+        },
+      ],
+      capturedAt: new Date().toISOString(),
+      source: 'extension',
+    })
+
+    const executor = {
+      takeScreenshot: vi.fn().mockResolvedValue({
+        dataBase64: '',
+        mimeType: 'image/png',
+        path: '',
+        capturedAt: new Date().toISOString(),
+      }),
+      observeWindows: vi.fn().mockResolvedValue({
+        frontmostAppName: 'AIRI',
+        windows: [
+          {
+            id: 'chrome:1',
+            appName: 'Google Chrome',
+            title: 'Other Page',
+            bounds: { x: 0, y: 0, width: 800, height: 900 },
+          },
+          {
+            id: 'chrome:2',
+            appName: 'Google Chrome',
+            title: 'Target Page',
+            bounds: { x: 1000, y: 0, width: 800, height: 900 },
+          },
+        ],
+        observedAt: new Date().toISOString(),
+      }),
+    } as unknown as DesktopExecutor
+
+    const snapshot = await captureDesktopGrounding({
+      config: {} as never,
+      executor,
+      input: { includeChrome: true },
+    })
+
+    const chromeCandidate = snapshot.targetCandidates.find(candidate => candidate.source === 'chrome_dom')
+    expect(chromeCandidate?.bounds.x).toBe(1020)
+  })
 })

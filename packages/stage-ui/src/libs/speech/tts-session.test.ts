@@ -4,7 +4,7 @@ import type { PlaybackManagerSubset, StreamingSessionSnapshot } from './tts-sess
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { createStageTtsSession, createStreamingTtsSession } from './tts-session'
+import { createStageTtsSession, createStageTtsTurnCancellationGate, createStreamingTtsSession } from './tts-session'
 
 // Lightweight IntentHandle stub. We do not import the real one from
 // `@proj-airi/pipelines-audio` because the segmenter adapter only needs a
@@ -90,6 +90,83 @@ function makePipelineStub() {
 const dummyAudioContext = { sampleRate: 24000 } as unknown as BaseAudioContext
 
 describe('createStageTtsSession (factory)', () => {
+  /**
+   * @example
+   * A cancellation that wins an asynchronous lip-sync setup prevents TTS from opening.
+   */
+  it('blocks TTS open after asynchronous preparation is cancelled for Discord audit D-011', async () => {
+    // ROOT CAUSE:
+    //
+    // Stage checked for an existing TTS session only after `setupLipSync()`.
+    // Cancellation during that await found no session to cancel, then the resumed
+    // before-compose hook opened a new segmenter/WebSocket session for the stale
+    // turn and accepted later audio side effects.
+    //
+    // A bounded turn tombstone must be checked before and after asynchronous
+    // preparation so cancellation remains authoritative across the await.
+    let now = Date.parse('2026-01-01T00:00:00.000Z')
+    const gate = createStageTtsTurnCancellationGate(() => now)
+    let releasePreparation: (() => void) | undefined
+    const preparation = new Promise<void>((resolve) => {
+      releasePreparation = resolve
+    })
+    const openSession = vi.fn()
+    const prepareAndOpen = async () => {
+      if (gate.isCancelled('discord-tts-turn'))
+        return
+      await preparation
+      if (gate.isCancelled('discord-tts-turn'))
+        return
+      openSession()
+    }
+
+    const pendingOpen = prepareAndOpen()
+    gate.cancel('discord-tts-turn', now + 30_000)
+    releasePreparation?.()
+    await pendingOpen
+
+    // @example
+    expect(openSession).not.toHaveBeenCalled()
+    // @example
+    expect(gate.isCancelled('discord-tts-turn')).toBe(true)
+
+    now += 6 * 60 * 1000
+    // @example
+    expect(gate.isCancelled('discord-tts-turn')).toBe(false)
+  })
+
+  /**
+   * @example
+   * Cancellation churn cannot evict the marker protecting an in-flight TTS preparation.
+   */
+  it('keeps active TTS cancellation markers fail-closed at the hard cap for Discord audit D-012', () => {
+    // ROOT CAUSE:
+    //
+    // The bounded cancellation map evicted the marker with the earliest expiry
+    // whenever it reached capacity. That marker can still protect a turn awaiting
+    // Stage lip-sync preparation, so resolving the await later opened stale TTS.
+    //
+    // Capacity pressure must retain admitted markers and fail closed for unknown
+    // turns until the bounded overflow window expires.
+    let now = Date.parse('2026-01-01T00:00:00.000Z')
+    const gate = createStageTtsTurnCancellationGate(() => now)
+    gate.cancel('active-preparation', now + 30_000)
+
+    for (let index = 0; index < 1_024; index += 1)
+      gate.cancel(`cancelled-churn-${index}`, now + 30_001 + index)
+
+    // @example
+    expect(gate.isCancelled('active-preparation')).toBe(true)
+    // @example
+    expect(gate.isCancelled('cancelled-churn-1023')).toBe(true)
+
+    now += 6 * 60 * 1000
+    // @example
+    expect(gate.isCancelled('active-preparation')).toBe(false)
+    // @example
+    expect(gate.isCancelled('cancelled-churn-1023')).toBe(false)
+  })
+
   it('returns the segmenter adapter when transport is "rest"', () => {
     const intent = makeIntentStub({ intentId: 'segmenter-1' })
     const playback = makePlaybackManagerStub()
@@ -272,6 +349,61 @@ describe('createStreamingTtsSession (adapter)', () => {
     ])
   })
 
+  /**
+   * @example
+   * Two concurrent chat turns own independent streaming TTS intents.
+   */
+  it('cancels only the owning streaming TTS turn (Discord audit D-011)', () => {
+    const playback = makePlaybackManagerStub()
+    const pipeA = makePipelineStub()
+    const pipeB = makePipelineStub()
+    const specialA = vi.fn()
+    const specialB = vi.fn()
+
+    // ROOT CAUSE:
+    //
+    // Stage previously stored one currentSession for every chat hook. A token
+    // from turn B could therefore enter A's WebSocket, and cancelling A used a
+    // global playback stop that also interrupted B.
+    //
+    // Each StageTtsSession already owns a stable intentId. Keeping sessions by
+    // chat turnId lets cancellation drain only that intent's queued playback.
+    const sessionA = createStreamingTtsSession({
+      intentId: 'stream-turn-a',
+      snapshot: makeStreamingSnapshot({ onImmediateSpecial: specialA }),
+      audioContext: dummyAudioContext,
+      playbackManager: playback,
+      pipelineFactory: pipeA.factory,
+    })
+    const sessionB = createStreamingTtsSession({
+      intentId: 'stream-turn-b',
+      snapshot: makeStreamingSnapshot({ onImmediateSpecial: specialB }),
+      audioContext: dummyAudioContext,
+      playbackManager: playback,
+      pipelineFactory: pipeB.factory,
+    })
+
+    sessionA.appendText('A_ONLY_TTS_SENTINEL')
+    sessionB.appendText('B_ONLY_TTS_SENTINEL')
+    sessionA.appendSpecial('A_ONLY_SPECIAL_SENTINEL')
+    sessionB.appendSpecial('B_ONLY_SPECIAL_SENTINEL')
+    sessionB.finishInput()
+    sessionA.cancel('chat-turn-cancelled')
+
+    expect(pipeA.calls.appendText).toEqual(['A_ONLY_TTS_SENTINEL'])
+    expect(pipeB.calls.appendText).toEqual(['B_ONLY_TTS_SENTINEL'])
+    expect(pipeA.calls.cancel).toBe(1)
+    expect(pipeB.calls.cancel).toBe(0)
+    expect(pipeA.calls.finish).toBe(0)
+    expect(pipeB.calls.finish).toBe(1)
+    expect(specialA).toHaveBeenCalledWith('A_ONLY_SPECIAL_SENTINEL')
+    expect(specialB).toHaveBeenCalledWith('B_ONLY_SPECIAL_SENTINEL')
+    expect(playback.cancellations).toEqual([{
+      intentId: 'stream-turn-a',
+      reason: 'chat-turn-cancelled',
+    }])
+  })
+
   it('cancel after pipeline terminated still drains playback', () => {
     const playback = makePlaybackManagerStub()
     const pipe = makePipelineStub()
@@ -330,7 +462,7 @@ describe('createStreamingTtsSession (adapter)', () => {
     pipe.options.onError(err)
     pipe.options.onDone()
 
-    expect(onError).toHaveBeenCalledWith(err)
-    expect(onDone).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(err, 'stream-err')
+    expect(onDone).toHaveBeenCalledWith('stream-err')
   })
 })

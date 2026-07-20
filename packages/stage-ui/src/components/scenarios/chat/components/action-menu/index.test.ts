@@ -12,19 +12,21 @@ describe('createChatActionMenuItems', () => {
   /**
    * @example
    * it('includes retry between copy and delete when retry is available', () => {
-   *   const items = createChatActionMenuItems({ canCopy: true, canRetry: true, canDelete: true })
-   *   expect(items.map(item => item.action)).toEqual(['copy', 'retry', 'delete'])
+   *   const items = createChatActionMenuItems({ canCopy: true, canEdit: true, canRetry: true, canToggleExclusion: true, canDelete: true })
+   *   expect(items.map(item => item.action)).toEqual(['copy', 'edit', 'retry', 'toggle-exclusion', 'delete'])
    * })
    */
   it('includes retry between copy and delete when retry is available', () => {
     const items = createChatActionMenuItems({
       canCopy: true,
+      canEdit: true,
       canRetry: true,
+      canToggleExclusion: true,
       canDelete: true,
     })
 
-    expect(items.map(item => item.action)).toEqual(['copy', 'retry', 'delete'])
-    expect(items[1]?.label).toBe('Retry')
+    expect(items.map(item => item.action)).toEqual(['copy', 'edit', 'retry', 'toggle-exclusion', 'delete'])
+    expect(items[2]?.label).toBe('Retry')
   })
 
   /**
@@ -37,7 +39,9 @@ describe('createChatActionMenuItems', () => {
   it('omits retry when retry is unavailable', () => {
     const items = createChatActionMenuItems({
       canCopy: true,
+      canEdit: false,
       canRetry: false,
+      canToggleExclusion: false,
       canDelete: true,
     })
 

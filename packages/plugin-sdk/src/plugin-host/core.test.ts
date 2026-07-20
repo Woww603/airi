@@ -1,9 +1,12 @@
+import type { ModuleAuthenticateEvent } from '@proj-airi/plugin-protocol/types'
+
 import type { ModulePermissionDeclaration } from './shared/types'
 
 import { join } from 'node:path'
 
 import { createContext, defineEventa, defineInvoke, defineInvokeHandler } from '@moeru/eventa'
 import {
+  moduleAuthenticate,
   moduleCompatibilityResult,
   modulePermissionsCurrent,
   modulePermissionsDeclare,
@@ -243,6 +246,76 @@ describe('for PluginHost', () => {
       ],
     } satisfies ModulePermissionDeclaration,
   }
+
+  /**
+   * Reproduces the Electron security boundary regression where PluginHost ignored
+   * the application runtime and imported the manifest entrypoint in the host process.
+   *
+   * @example
+   * it('loads through an injected runtime session without importing the entrypoint in the host process', async () => {
+   *   expect(runtimeSessionFactory).toHaveBeenCalledOnce()
+   * })
+   */
+  it('loads through an injected runtime session without importing the entrypoint in the host process', async () => {
+    const context = createContext()
+    const init = vi.fn(async () => {})
+    const setupModules = vi.fn(async () => {})
+    const dispose = vi.fn()
+    const runtimeSessionFactory = vi.fn(async () => ({
+      hostChannel: context,
+      loadPlugin: async () => ({ init, setupModules }),
+      dispose,
+    }))
+    const host = new PluginHost({ runtimeSessionFactory })
+    const manifest = {
+      ...testManifest,
+      entrypoints: {
+        electron: '/entrypoint-that-must-not-run-in-the-host-process.mjs',
+      },
+    }
+
+    const session = await host.start(manifest)
+
+    expect(runtimeSessionFactory).toHaveBeenCalledOnce()
+    expect(init).toHaveBeenCalledOnce()
+    expect(setupModules).toHaveBeenCalledOnce()
+
+    host.stop(session.id)
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  /**
+   * @example
+   * it('binds authentication to the generated plugin module identity', async () => {})
+   */
+  it('binds authentication to the generated plugin module identity (Discord audit D-001)', async () => {
+    const host = new PluginHost({ runtime: 'electron' })
+    const session = await host.load(testManifest, { cwd: '' })
+    const authenticationEvents: Array<{ body?: ModuleAuthenticateEvent }> = []
+    session.channels.host.on(moduleAuthenticate, event => authenticationEvents.push(event))
+
+    // ROOT CAUSE:
+    //
+    // Module authentication previously sent only a token. Once the gateway
+    // binds credentials to immutable module principals, that legacy payload can
+    // no longer prove which generated plugin identity owns the connection.
+    await host.init(session.id)
+
+    // @example
+    expect(authenticationEvents).toEqual([
+      expect.objectContaining({
+        body: {
+          token: `${session.id}:${session.identity.id}`,
+          module: {
+            name: testManifest.name,
+            index: session.index,
+            identity: session.identity,
+          },
+        },
+      }),
+    ])
+  })
+
   const deniedKitReadManifest = {
     ...testManifest,
     permissions: {
@@ -923,13 +996,13 @@ describe('for PluginHost', () => {
     await expect(session.apis.kits.list()).rejects.toThrow('Permission denied: resources.read "proj-airi:plugin-sdk:resources:kits"')
   })
 
-  it('should reject non in-memory transport for MVP', async () => {
+  it('should reject unsupported transports in the default node runtime', async () => {
     const host = new PluginHost({
       runtime: 'electron',
       transport: { kind: 'websocket', url: 'ws://localhost:3000' },
     })
 
-    await expect(host.start(testManifest, { cwd: '' })).rejects.toThrow('Only in-memory transport is currently supported by PluginHost alpha.')
+    await expect(host.start(testManifest, { cwd: '' })).rejects.toThrow('WebSocket transport is not implemented for node runtime yet.')
   })
 
   it('should be able to expose setupModules', async () => {

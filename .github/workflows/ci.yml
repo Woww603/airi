@@ -37,6 +37,10 @@ jobs:
         working-directory: ./apps/stage-pocket
 
       - run: pnpm install --frozen-lockfile
+      - name: Test CI command contract
+        run: pnpm exec vitest run --config scripts/vitest.ci-command-contract.config.mts
+      - name: Verify CI command contract
+        run: node scripts/verify-ci-command-contract.mjs
       - run: pnpm run lint
       - run: docker run -v `pwd`:`pwd` -w `pwd` ghcr.io/realm/swiftlint:latest
         working-directory: ./apps/stage-pocket
@@ -152,6 +156,27 @@ jobs:
 
       - run: pnpm run build:packages
       - run: pnpm run test:run
+
+  discord:
+    name: Discord Service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Type check Discord service
+        run: pnpm -F @proj-airi/discord-bot typecheck
+      - name: Test Discord service
+        run: pnpm -F @proj-airi/discord-bot test:run
+      - name: Type check Discord Dashboard
+        run: pnpm -F @proj-airi/discord-dashboard typecheck
+      - name: Build Discord Dashboard
+        run: pnpm -F @proj-airi/discord-dashboard build
 
   typecheck:
     name: Type Check

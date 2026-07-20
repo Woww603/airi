@@ -14,6 +14,8 @@ import { promisify } from 'node:util'
 
 import WebSocket from 'ws'
 
+import { errorMessageFrom } from '@moeru/std'
+
 import { hasCompletedChatTurn } from '../e2e/chat-turn'
 import {
   isChatSurfaceTarget,
@@ -748,7 +750,7 @@ async function main() {
     catch (error) {
       addTimeline('chat-open-fallback', {
         mode: 'same-window-route',
-        reason: error instanceof Error ? error.message : String(error),
+        reason: errorMessageFrom(error) ?? String(error),
       })
 
       await mainTargetClient.close().catch(() => {})
