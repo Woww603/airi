@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIRI Chat Experience"
+  short_description: "Research and implement AIRI chat features safely"
+  default_prompt: "Use $airi-chat-experience to evaluate and implement a chat experience improvement in AIRI."
