@@ -2544,7 +2544,7 @@ export class DiscordAdapter {
       return
     }
 
-    const scheduled = this.discordIngressScheduler.schedule(targetSessionId, () => this.processDiscordTextInputEnvelope(
+    const scheduled = this.discordIngressScheduler.schedule(`discord-user-${source.userId}`, targetSessionId, () => this.processDiscordTextInputEnvelope(
       source,
       normalizedDiscord,
       targetSessionId,

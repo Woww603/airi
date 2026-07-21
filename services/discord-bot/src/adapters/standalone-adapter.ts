@@ -1351,7 +1351,7 @@ export class StandaloneDiscordAdapter {
     if (!lifecycleActive())
       return
 
-    const scheduled = this.ingressScheduler.schedule(sessionId, () => this.processDiscordMessageEnvelope({
+    const scheduled = this.ingressScheduler.schedule(principalKey, sessionId, () => this.processDiscordMessageEnvelope({
       author,
       botUserId,
       filterInput,
