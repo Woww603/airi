@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { Buffer } from 'node:buffer'
+import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -2138,6 +2139,1181 @@ describe('standalone memory store', () => {
       expect(contents).toContain('我喜欢小提琴')
       // @example
       expect(contents).toHaveLength(13)
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('bounds CSR-08 DM preferences by stable Discord user and stores only opt-outs', async () => {})
+   */
+  it('bounds CSR-08 DM preferences by stable Discord user and stores only opt-outs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+
+    try {
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm-0',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session-0',
+        text: '!airi memory off',
+        userId: 'synthetic-user',
+      }
+
+      for (let index = 0; index < 256; index++) {
+        await store.handleCommand({
+          ...turn,
+          channelId: `synthetic-dm-${index}`,
+          sessionId: `synthetic-session-${index}`,
+        })
+      }
+      const afterOptOut = JSON.parse(await readFile(filePath, 'utf8')) as {
+        preferences: Array<{ enabled: boolean, userId: string }>
+      }
+      await store.handleCommand({ ...turn, text: '!airi memory on' })
+      const afterOptIn = JSON.parse(await readFile(filePath, 'utf8')) as { preferences: unknown[] }
+
+      // ROOT CAUSE:
+      //
+      // CSR-08 persisted one preference for every exact DM session even though
+      // Discord user id is the stable privacy principal. Default-on rows also
+      // consumed durable space. DM persistence must contain only one user-level
+      // explicit opt-out, and explicit opt-in must remove it.
+      // @example
+      expect(afterOptOut.preferences).toEqual([expect.objectContaining({
+        enabled: false,
+        userId: 'synthetic-user',
+      })])
+      // @example
+      expect(afterOptIn.preferences).toEqual([])
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('fails closed without evicting CSR-08 opt-outs at preference capacity', async () => {})
+   */
+  it('fails closed without evicting CSR-08 opt-outs at preference capacity', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+
+    try {
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+        AIRI_DISCORD_MEMORY_MAX_PREFERENCE_RECORDS: '1',
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory off',
+        userId: 'synthetic-user-a',
+      }
+      await store.handleCommand(turn)
+      const capacityFailure = await store.handleCommand({
+        ...turn,
+        sessionId: 'synthetic-session-b',
+        userId: 'synthetic-user-b',
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      const persisted = JSON.parse(await readFile(filePath, 'utf8')) as {
+        preferences: Array<{ userId: string }>
+      }
+
+      // ROOT CAUSE:
+      //
+      // CSR-08 had no preference capacity and no process-local fail-closed state.
+      // A rejected new opt-out must retain every prior opt-out, return a distinct
+      // capacity error, and disable memory for that user for this process.
+      // @example
+      expect(capacityFailure).toMatchObject({ code: 'STANDALONE_MEMORY_PREFERENCE_CAPACITY' })
+      // @example
+      expect(persisted.preferences.map(preference => preference.userId)).toEqual(['synthetic-user-a'])
+      // @example
+      expect(await store.handleCommand({
+        ...turn,
+        sessionId: 'synthetic-session-b',
+        text: '!airi memory status',
+        userId: 'synthetic-user-b',
+      })).toContain('disabled')
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('rejects oversized CSR-08 stores before parsing and preserves their bytes', async () => {})
+   */
+  it('rejects oversized CSR-08 stores before parsing and preserves their bytes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const oversizedContents = '{'.padEnd(1025, 'x')
+
+    try {
+      await writeFile(filePath, oversizedContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+        AIRI_DISCORD_MEMORY_MAX_FILE_BYTES: '1024',
+      }, dir))
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const reply = await store.handleCommand({
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      })
+      warning.mockRestore()
+
+      // ROOT CAUSE:
+      //
+      // CSR-08 read and parsed the complete file before applying any byte bound.
+      // An oversized store must remain byte-for-byte intact and make DM memory
+      // fail closed instead of falling back to the normal default-on state.
+      // @example
+      expect(reply).toContain('disabled')
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(oversizedContents)
+    }
+    finally {
+      vi.restoreAllMocks()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('migrates CSR-08 legacy DM rows without losing opt-outs or changing guild consent', async () => {})
+   */
+  it('migrates CSR-08 legacy DM rows without losing opt-outs or changing guild consent', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+
+    try {
+      await writeFile(filePath, JSON.stringify({
+        memories: [],
+        preferences: [{
+          channelId: 'synthetic-dm-old',
+          enabled: false,
+          sessionId: 'synthetic-session-old',
+          updatedAt: '2026-07-20T00:00:00.000Z',
+          userId: 'synthetic-user',
+        }, {
+          channelId: 'synthetic-dm-new',
+          enabled: true,
+          sessionId: 'synthetic-session-new',
+          updatedAt: '2026-07-21T00:00:00.000Z',
+          userId: 'synthetic-user',
+        }, {
+          channelId: 'synthetic-guild-channel',
+          enabled: true,
+          guildId: 'synthetic-guild',
+          sessionId: 'synthetic-guild-session',
+          updatedAt: '2026-07-21T00:00:00.000Z',
+          userId: 'synthetic-user',
+        }],
+        version: 3,
+      }))
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const dmStatus = await store.handleCommand({
+        channelId: 'different-dm-channel',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'different-dm-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      })
+      const guildStatus = await store.handleCommand({
+        channelId: 'synthetic-guild-channel',
+        directMessage: false,
+        displayName: 'Synthetic user',
+        guildId: 'synthetic-guild',
+        sessionId: 'synthetic-guild-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      })
+      const migrated = JSON.parse(await readFile(filePath, 'utf8')) as {
+        preferences: Array<{ guildId?: string, userId: string }>
+        version: number
+      }
+
+      // ROOT CAUSE:
+      //
+      // CSR-08 loaded legacy exact-session rows without migration. Safe migration
+      // must collapse DM decisions by stable user, retain an opt-out even when a
+      // newer exact-session opt-in exists, and leave guild consent effective.
+      // @example
+      expect(dmStatus).toContain('disabled')
+      // @example
+      expect(guildStatus).toContain('enabled')
+      // @example
+      expect(migrated.preferences).toHaveLength(2)
+      // @example
+      expect(migrated.version).toBe(4)
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('does not persist CSR-08 default-on DM rows and frees capacity on opt-in', async () => {})
+   */
+  it('does not persist CSR-08 default-on DM rows and frees capacity on opt-in', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+
+    try {
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+        AIRI_DISCORD_MEMORY_MAX_PREFERENCE_RECORDS: '1',
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session-a',
+        text: '!airi memory status',
+        userId: 'synthetic-user-a',
+      }
+
+      expect(await store.handleCommand(turn)).toContain('enabled')
+      await store.handleCommand({ ...turn, text: '!airi memory on' })
+      let persisted = JSON.parse(await readFile(filePath, 'utf8')) as { preferences: unknown[] }
+      expect(persisted.preferences).toEqual([])
+
+      await store.handleCommand({ ...turn, text: '!airi memory off' })
+      await store.handleCommand({ ...turn, text: '!airi memory on' })
+      await store.handleCommand({
+        ...turn,
+        sessionId: 'synthetic-session-b',
+        text: '!airi memory off',
+        userId: 'synthetic-user-b',
+      })
+      persisted = JSON.parse(await readFile(filePath, 'utf8')) as { preferences: unknown[] }
+
+      // @example
+      expect(persisted.preferences).toEqual([expect.objectContaining({ userId: 'synthetic-user-b' })])
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('keeps CSR-08 opt-out fail-closed after persistence failure and preserves the valid file', async () => {})
+   */
+  it('keeps CSR-08 opt-out fail-closed after persistence failure and preserves the valid file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const originalContents = JSON.stringify({ memories: [], preferences: [], version: 4 })
+
+    try {
+      await writeFile(filePath, originalContents, { mode: 0o600 })
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory off',
+        userId: 'synthetic-user',
+      }
+      await chmod(dir, 0o500)
+      const failure = await store.handleCommand(turn).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      await chmod(dir, 0o700)
+
+      // ROOT CAUSE:
+      //
+      // A failed opt-out write must never be reported as success or replace the
+      // last valid file. Process-local fail-closed state prevents the ordinary DM
+      // default from re-enabling memory after the persistence failure.
+      // @example
+      expect(failure).toMatchObject({ code: 'STANDALONE_MEMORY_PREFERENCE_PERSISTENCE' })
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      // @example
+      expect(await store.handleCommand({ ...turn, text: '!airi memory status' })).toContain('disabled')
+    }
+    finally {
+      await chmod(dir, 0o700).catch(() => {})
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('enforces the CSR-08 default 4096-record capacity without eviction', async () => {})
+   */
+  it('enforces the CSR-08 default 4096-record capacity without eviction', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const preferences = Array.from({ length: 4096 }, (_, index) => ({
+      enabled: false,
+      scope: 'dm',
+      updatedAt: '2026-07-21T00:00:00.000Z',
+      userId: `synthetic-user-${index}`,
+    }))
+
+    try {
+      await writeFile(filePath, JSON.stringify({ memories: [], preferences, version: 4 }))
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const failure = await store.handleCommand({
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session-new',
+        text: '!airi memory off',
+        userId: 'synthetic-user-new',
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+      const persisted = JSON.parse(await readFile(filePath, 'utf8')) as { preferences: unknown[] }
+
+      // @example
+      expect(store.getConfig().maxPreferenceRecords).toBe(4096)
+      // @example
+      expect(failure).toMatchObject({ code: 'STANDALONE_MEMORY_PREFERENCE_CAPACITY' })
+      // @example
+      expect(persisted.preferences).toEqual(preferences)
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('rejects a new CSR-08 opt-out at serialized-byte capacity', async () => {})
+   */
+  it('rejects a new CSR-08 opt-out at serialized-byte capacity', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const originalContents = JSON.stringify({ memories: [], preferences: [], version: 4 })
+
+    try {
+      await writeFile(filePath, originalContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+        AIRI_DISCORD_MEMORY_MAX_FILE_BYTES: String(Buffer.byteLength(originalContents) + 1),
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory off',
+        userId: 'synthetic-user',
+      }
+      const failure = await store.handleCommand(turn).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+
+      // @example
+      expect(failure).toMatchObject({ code: 'STANDALONE_MEMORY_PREFERENCE_CAPACITY' })
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      // @example
+      expect(await store.handleCommand({ ...turn, text: '!airi memory status' })).toContain('disabled')
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('rejects invalid CSR-08 limit configuration deterministically', () => {})
+   */
+  it('rejects invalid CSR-08 limit configuration deterministically', () => {
+    const invalidValues = ['NaN', 'Infinity', '0', '-1', '1.5']
+
+    for (const value of invalidValues) {
+      // @example
+      expect(() => resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_MAX_FILE_BYTES: value,
+      }, '/synthetic')).toThrow('finite positive integer')
+      // @example
+      expect(() => resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_MAX_PREFERENCE_RECORDS: value,
+      }, '/synthetic')).toThrow('finite positive integer')
+    }
+  })
+
+  /**
+   * @example
+   * it('fails closed on malformed CSR-08 stores without modifying them', async () => {})
+   */
+  it('fails closed on malformed CSR-08 stores without modifying them', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const malformedContents = '{"memories":['
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await writeFile(filePath, malformedContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      }
+
+      // @example
+      expect(await store.handleCommand(turn)).toContain('disabled')
+      // @example
+      expect(await store.buildPrompt({ ...turn, text: 'synthetic prompt' })).toBe('')
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(malformedContents)
+      // @example
+      expect(warning).toHaveBeenCalledWith(
+        '[discord-bot:standalone] memory store unavailable:',
+        'MALFORMED_STORE',
+      )
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('fails closed on unreadable CSR-08 stores without replacing them', async () => {})
+   */
+  it('fails closed on unreadable CSR-08 stores without replacing them', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const originalContents = JSON.stringify({ memories: [], preferences: [], version: 4 })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await writeFile(filePath, originalContents, { mode: 0o600 })
+      await chmod(filePath, 0o000)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const status = await store.handleCommand({
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      })
+      await chmod(filePath, 0o600)
+
+      // ROOT CAUSE:
+      //
+      // Read errors previously escaped the command path without establishing a
+      // fail-closed store state. An unreadable store must disable DM memory and
+      // must not be replaced with a healthy-looking empty file.
+      // @example
+      expect(status).toContain('disabled')
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      // @example
+      expect(warning).toHaveBeenCalledWith(
+        '[discord-bot:standalone] memory store unavailable:',
+        'UNREADABLE_STORE',
+      )
+    }
+    finally {
+      warning.mockRestore()
+      await chmod(filePath, 0o600).catch(() => {})
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('blocks ambiguous CSR-08 legacy opt-out migration without changing the file', async () => {})
+   */
+  it('blocks ambiguous CSR-08 legacy opt-out migration without changing the file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const originalContents = JSON.stringify({
+      memories: [],
+      preferences: [{
+        channelId: 'synthetic-dm',
+        enabled: false,
+        sessionId: 'legacy-session-without-stable-user',
+        updatedAt: '2026-07-21T00:00:00.000Z',
+      }],
+      version: 3,
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await writeFile(filePath, originalContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const status = await store.handleCommand({
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      })
+
+      // @example
+      expect(status).toContain('disabled')
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      // @example
+      expect(warning).toHaveBeenCalledWith(
+        '[discord-bot:standalone] memory store unavailable:',
+        'BLOCKED_MIGRATION',
+      )
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('enforces the CSR-08 one-MiB default before JSON parsing', async () => {})
+   */
+  it('enforces the CSR-08 one-MiB default before JSON parsing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const oversizedContents = '{'.padEnd(1_048_577, 'x')
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await writeFile(filePath, oversizedContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const status = await store.handleCommand({
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      })
+
+      // @example
+      expect(store.getConfig().maxFileBytes).toBe(1_048_576)
+      // @example
+      expect(status).toContain('disabled')
+      // @example
+      expect(warning).toHaveBeenCalledWith(
+        '[discord-bot:standalone] memory store unavailable:',
+        'OVERSIZED_STORE',
+      )
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('fails closed for every runtime-invalid CSR-08 DM identity', async () => {})
+   */
+  it('fails closed for every runtime-invalid CSR-08 DM identity', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const invalidUserIds = [undefined, null, '', '   ', 123, { id: 'synthetic-user' }]
+
+    try {
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      await store.addMemory({
+        content: 'Project rule: keep replies concise',
+        scope: 'global',
+      })
+      const originalContents = await readFile(filePath, 'utf8')
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session-that-must-not-be-an-identity-fallback',
+        text: '!airi memory off',
+      }
+
+      for (const userId of invalidUserIds) {
+        const runtimeTurn = { ...turn, userId }
+        const command = Reflect.apply(store.handleCommand, store, [runtimeTurn]) as Promise<unknown>
+        const prompt = Reflect.apply(store.buildPrompt, store, [{ ...runtimeTurn, text: 'synthetic prompt' }]) as Promise<unknown>
+        const remember = Reflect.apply(store.rememberTurn, store, [{ ...runtimeTurn, text: 'Please remember that I prefer concise replies' }]) as Promise<unknown>
+        const [commandFailure, promptResult] = await Promise.all([
+          command.then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+          prompt,
+          remember,
+        ])
+
+        // ROOT CAUSE:
+        //
+        // CSR-08 only checked truthiness in the command path and did not validate
+        // DM identity before default-on recall. Missing, blank, or runtime-invalid
+        // ids could therefore receive global cards or use a shared preference path.
+        // The stable Discord user id is the only permissible DM identity.
+        // @example
+        expect(commandFailure).toMatchObject({ code: 'STANDALONE_MEMORY_INVALID_IDENTITY' })
+        // @example
+        expect(promptResult).toBe('')
+        // @example
+        expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      }
+    }
+    finally {
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('preserves a corrupt CSR-08 v4 memory array and fails closed store-wide', async () => {})
+   */
+  it('preserves a corrupt CSR-08 v4 memory array and fails closed store-wide', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const originalContents = JSON.stringify({
+      memories: [{
+        accessCount: 0,
+        content: 'Project rule: keep replies concise',
+        createdAt: '2026-07-22T00:00:00.000Z',
+        id: 'synthetic-valid-memory',
+        scope: 'global',
+        source: 'dashboard',
+        status: 'active',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+      }, 42],
+      preferences: [],
+      version: 4,
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await writeFile(filePath, originalContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: 'synthetic prompt',
+        userId: 'synthetic-user',
+      }
+
+      // ROOT CAUSE:
+      //
+      // CSR-08 filtered invalid v4 memory elements, retained the valid subset,
+      // and atomically rewrote a healthy-looking store. Corruption must preserve
+      // every original byte and disable all memory decisions until intentional
+      // operator recovery supplies a valid store.
+      // @example
+      expect(await store.buildPrompt(turn)).toBe('')
+      // @example
+      expect(await store.handleCommand({ ...turn, text: '!airi memory status' })).toContain('disabled')
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      // @example
+      expect((await readdir(dir)).filter(entry => entry.includes('.tmp'))).toEqual([])
+      // @example
+      expect(warning).toHaveBeenCalledWith(
+        '[discord-bot:standalone] memory store unavailable:',
+        'MALFORMED_STORE',
+      )
+      // @example
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('Project rule: keep replies concise')
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('preserves corrupt CSR-08 v4 preferences while valid v4 stores remain healthy', async () => {})
+   */
+  it('preserves corrupt CSR-08 v4 preferences while valid v4 stores remain healthy', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const originalContents = JSON.stringify({
+      memories: [],
+      preferences: [{
+        enabled: false,
+        scope: 'dm',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+        userId: 'synthetic-user',
+      }, {
+        enabled: true,
+        scope: 'dm',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+        userId: 'synthetic-malformed-user',
+      }],
+      version: 4,
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      await writeFile(filePath, originalContents)
+      const corruptStore = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      const turn = {
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      }
+
+      // @example
+      expect(await corruptStore.handleCommand(turn)).toContain('disabled')
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      // @example
+      expect(warning).toHaveBeenCalledWith(
+        '[discord-bot:standalone] memory store unavailable:',
+        'MALFORMED_STORE',
+      )
+
+      const healthyPath = join(dir, 'healthy-memory.json')
+      await writeFile(healthyPath, JSON.stringify({ memories: [], preferences: [], version: 4 }))
+      const healthyStore = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: healthyPath,
+      }, dir))
+
+      // @example
+      expect(await healthyStore.handleCommand({ ...turn, text: '!airi memory status' })).toContain('enabled')
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('rejects semantic CSR-08 v4 identity corruption before partial exposure or writeback', async () => {})
+   */
+  it('rejects semantic CSR-08 v4 identity corruption before partial exposure or writeback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const validMemory = {
+      accessCount: 0,
+      content: 'Project rule: keep replies concise',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      id: 'synthetic-valid-memory',
+      scope: 'global',
+      source: 'dashboard',
+      status: 'active',
+      updatedAt: '2026-07-22T00:00:00.000Z',
+    }
+    const turn = {
+      channelId: 'synthetic-dm',
+      directMessage: true,
+      displayName: 'Synthetic user',
+      sessionId: 'synthetic-session',
+      text: 'synthetic prompt',
+      userId: 'synthetic-user',
+    }
+
+    try {
+      for (const [index, invalidId] of ['', '   ', ' synthetic-invalid-memory '].entries()) {
+        const filePath = join(dir, `memory-${index}.json`)
+        const originalContents = JSON.stringify({
+          memories: [validMemory, { ...validMemory, id: invalidId }],
+          preferences: [],
+          version: 4,
+        })
+        await writeFile(filePath, originalContents)
+        const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+          AIRI_DISCORD_MEMORY_FILE: filePath,
+        }, dir))
+
+        // ROOT CAUSE:
+        //
+        // The schema-v4 predicate accepted every string id. The persisted-memory
+        // normalizer then trimmed it, discarded empty ids, and exposed/rebuilt the
+        // valid subset without establishing the required sticky corrupt-store state.
+        // Strict current-schema validation must run before that normalizer.
+        // @example
+        expect(await store.buildPrompt(turn)).toBe('')
+        // @example
+        expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+        // @example
+        expect(await store.handleCommand({ ...turn, text: '!airi memory status' })).toContain('disabled')
+      }
+
+      // @example
+      expect(warning).toHaveBeenCalledTimes(3)
+      // @example
+      expect(warning.mock.calls).toEqual([
+        ['[discord-bot:standalone] memory store unavailable:', 'MALFORMED_STORE'],
+        ['[discord-bot:standalone] memory store unavailable:', 'MALFORMED_STORE'],
+        ['[discord-bot:standalone] memory store unavailable:', 'MALFORMED_STORE'],
+      ])
+      // @example
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(validMemory.content)
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('keeps semantic CSR-08 v4 corruption sticky after external file repair', async () => {})
+   */
+  it('keeps semantic CSR-08 v4 corruption sticky after external file repair', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const corruptPath = join(dir, 'corrupt-memory.json')
+    const healthyPath = join(dir, 'healthy-memory.json')
+    const corruptContents = JSON.stringify({
+      memories: [{
+        accessCount: 0,
+        content: 'Private synthetic memory content',
+        createdAt: '2026-07-22T00:00:00.000Z',
+        id: '',
+        scope: 'global',
+        source: 'dashboard',
+        status: 'active',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+      }],
+      preferences: [],
+      version: 4,
+    })
+    const repairedContents = JSON.stringify({ memories: [], preferences: [], version: 4 })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const turn = {
+      channelId: 'synthetic-dm',
+      directMessage: true,
+      displayName: 'Synthetic user',
+      sessionId: 'synthetic-session',
+      text: 'synthetic prompt',
+      userId: 'synthetic-user',
+    }
+
+    try {
+      await writeFile(corruptPath, corruptContents)
+      await writeFile(healthyPath, repairedContents)
+      const corruptStore = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: corruptPath,
+      }, dir))
+      const healthyStore = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: healthyPath,
+      }, dir))
+
+      // @example
+      expect(await corruptStore.buildPrompt(turn)).toBe('')
+      // @example
+      expect(await readFile(corruptPath, 'utf8')).toBe(corruptContents)
+      // Simulate operator replacement after detection. The current instance must
+      // remain fail closed until restart and must not mutate the replacement.
+      await writeFile(corruptPath, repairedContents)
+      const mutationFailure = await corruptStore.handleCommand({ ...turn, text: '!airi memory off' }).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+
+      // @example
+      expect(mutationFailure).toMatchObject({ code: 'STANDALONE_MEMORY_PREFERENCE_PERSISTENCE' })
+      // @example
+      expect(await corruptStore.handleCommand({ ...turn, text: '!airi memory status' })).toContain('disabled')
+      // @example
+      expect(await readFile(corruptPath, 'utf8')).toBe(repairedContents)
+      // @example
+      expect(warning).toHaveBeenCalledTimes(1)
+      // @example
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('Private synthetic memory content')
+      // @example
+      expect(await healthyStore.handleCommand({ ...turn, text: '!airi memory status' })).toContain('enabled')
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('keeps detected CSR-08 semantic v4 corruption sticky for later mutations', async () => {})
+   */
+  it('keeps detected CSR-08 semantic v4 corruption sticky for later mutations', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const corruptContents = JSON.stringify({
+      memories: [{
+        accessCount: 0,
+        content: 'Synthetic memory',
+        createdAt: '2026-07-22T00:00:00.000Z',
+        id: '',
+        scope: 'global',
+        source: 'dashboard',
+        status: 'active',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+      }],
+      preferences: [],
+      version: 4,
+    })
+    const repairedContents = JSON.stringify({ memories: [], preferences: [], version: 4 })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const turn = {
+      channelId: 'synthetic-dm',
+      directMessage: true,
+      displayName: 'Synthetic user',
+      sessionId: 'synthetic-session',
+      text: 'synthetic prompt',
+      userId: 'synthetic-user',
+    }
+
+    try {
+      await writeFile(filePath, corruptContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      await store.buildPrompt(turn)
+      await writeFile(filePath, repairedContents)
+      const mutationFailure = await store.handleCommand({ ...turn, text: '!airi memory off' }).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+
+      // @example
+      expect(mutationFailure).toMatchObject({ code: 'STANDALONE_MEMORY_PREFERENCE_PERSISTENCE' })
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(repairedContents)
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('emits one sanitized CSR-08 diagnostic for semantic v4 corruption', async () => {})
+   */
+  it('emits one sanitized CSR-08 diagnostic for semantic v4 corruption', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const privateContent = 'Private synthetic diagnostic sentinel'
+    const originalContents = JSON.stringify({
+      memories: [{
+        accessCount: 0,
+        content: privateContent,
+        createdAt: '2026-07-22T00:00:00.000Z',
+        id: '',
+        scope: 'global',
+        source: 'dashboard',
+        status: 'active',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+      }],
+      preferences: [],
+      version: 4,
+    })
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const turn = {
+      channelId: 'synthetic-dm',
+      directMessage: true,
+      displayName: 'Synthetic user',
+      sessionId: 'synthetic-session',
+      text: 'synthetic prompt',
+      userId: 'synthetic-user',
+    }
+
+    try {
+      await writeFile(filePath, originalContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+      await store.buildPrompt(turn)
+      await store.handleCommand({ ...turn, text: '!airi memory status' })
+
+      // @example
+      expect(warning.mock.calls).toEqual([
+        ['[discord-bot:standalone] memory store unavailable:', 'MALFORMED_STORE'],
+      ])
+      // @example
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(privateContent)
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('rejects every semantic CSR-08 v4 normalization and repair class', async () => {})
+   */
+  it('rejects every semantic CSR-08 v4 normalization and repair class', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const memory = {
+      accessCount: 0,
+      content: 'Project rule: keep replies concise',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      id: 'synthetic-memory',
+      scope: 'global',
+      source: 'dashboard',
+      status: 'active',
+      updatedAt: '2026-07-22T00:00:00.000Z',
+    }
+    const invalidMemories = [
+      { ...memory, accessCount: 0.5 },
+      { ...memory, confidence: 2 },
+      { ...memory, content: '' },
+      { ...memory, content: 'password is synthetic-secret' },
+      { ...memory, content: '  Project   rule: keep replies concise  ' },
+      { ...memory, displayName: ' Synthetic user ' },
+      { ...memory, expiresAt: 'not-a-timestamp' },
+      { ...memory, factKey: ' Preference.Favorite_Color ' },
+      { ...memory, guildId: '   ', scope: 'server' },
+      { ...memory, source: 'auto-chat' },
+      { ...memory, sourceSessionId: ' synthetic-session ' },
+    ]
+    const invalidPreferences = [
+      { enabled: false, scope: 'dm', updatedAt: memory.updatedAt, userId: ' synthetic-user ' },
+      { enabled: false, scope: 'dm', updatedAt: '2026-07-22T02:00:00.000+02:00', userId: 'synthetic-user' },
+      {
+        channelId: ' synthetic-channel ',
+        enabled: true,
+        guildId: 'synthetic-guild',
+        scope: 'guild',
+        sessionId: 'synthetic-session',
+        updatedAt: memory.updatedAt,
+        userId: 'synthetic-user',
+      },
+    ]
+    const turn = {
+      channelId: 'synthetic-dm',
+      directMessage: true,
+      displayName: 'Synthetic user',
+      sessionId: 'synthetic-session',
+      text: 'synthetic prompt',
+      userId: 'synthetic-user',
+    }
+
+    try {
+      const records = [
+        ...invalidMemories.map(value => ({ memories: [value], preferences: [] })),
+        ...invalidPreferences.map(value => ({ memories: [], preferences: [value] })),
+      ]
+      for (const [index, record] of records.entries()) {
+        const filePath = join(dir, `semantic-boundary-${index}.json`)
+        const originalContents = JSON.stringify({ ...record, version: 4 })
+        await writeFile(filePath, originalContents)
+        const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+          AIRI_DISCORD_MEMORY_FILE: filePath,
+        }, dir))
+
+        // @example
+        expect(await store.buildPrompt(turn)).toBe('')
+        // @example
+        expect(await readFile(filePath, 'utf8')).toBe(originalContents)
+      }
+
+      // @example
+      expect(warning).toHaveBeenCalledTimes(records.length)
+      for (const call of warning.mock.calls) {
+        // @example
+        expect(call).toEqual(['[discord-bot:standalone] memory store unavailable:', 'MALFORMED_STORE'])
+      }
+    }
+    finally {
+      warning.mockRestore()
+      await rm(dir, { force: true, recursive: true })
+    }
+  })
+
+  /**
+   * @example
+   * it('loads canonical CSR-08 v4 records without writeback', async () => {})
+   */
+  it('loads canonical CSR-08 v4 records without writeback', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airi-discord-memory-csr08-'))
+    const filePath = join(dir, 'memory.json')
+    const originalContents = JSON.stringify({
+      memories: [{
+        accessCount: 0,
+        content: 'Project rule: keep replies concise',
+        createdAt: '2026-07-22T00:00:00.000Z',
+        id: 'synthetic-memory',
+        scope: 'global',
+        source: 'dashboard',
+        status: 'active',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+      }],
+      preferences: [{
+        enabled: false,
+        scope: 'dm',
+        updatedAt: '2026-07-22T00:00:00.000Z',
+        userId: 'different-synthetic-user',
+      }],
+      version: 4,
+    })
+
+    try {
+      await writeFile(filePath, originalContents)
+      const store = new StandaloneMemoryStore(resolveStandaloneMemoryStoreConfig({
+        AIRI_DISCORD_MEMORY_FILE: filePath,
+      }, dir))
+
+      // @example
+      expect(await store.handleCommand({
+        channelId: 'synthetic-dm',
+        directMessage: true,
+        displayName: 'Synthetic user',
+        sessionId: 'synthetic-session',
+        text: '!airi memory status',
+        userId: 'synthetic-user',
+      })).toContain('enabled')
+      // @example
+      expect(await readFile(filePath, 'utf8')).toBe(originalContents)
     }
     finally {
       await rm(dir, { force: true, recursive: true })

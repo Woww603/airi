@@ -4,8 +4,9 @@ import type {
   StandaloneMemoryExtractor,
 } from './memory-extractor'
 
+import { Buffer } from 'node:buffer'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
 
 import {
@@ -121,6 +122,10 @@ export interface StandaloneMemoryStoreConfig {
   maxPromptMemories: number
   /** Maximum memory cards retained on disk. @default 1000 */
   maxStoredMemories: number
+  /** Maximum durable preference records retained on disk. @default 4096 */
+  maxPreferenceRecords: number
+  /** Maximum serialized memory-file size in bytes. @default 1048576 */
+  maxFileBytes: number
   /** Days before an automatically captured Discord card expires. @default 180 */
   autoCaptureTtlDays: number
 }
@@ -164,6 +169,70 @@ export class StandaloneMemoryCommandLifecycleError extends Error {
   }
 }
 
+/**
+ * Reports that a durable memory preference cannot be added without exceeding configured capacity.
+ *
+ * Use when:
+ * - A new opt-out or guild preference would exceed the record or serialized-byte limit.
+ *
+ * Expects:
+ * - Existing durable preferences remain unchanged.
+ *
+ * Returns:
+ * - A stable error code callers can distinguish from persistence failure.
+ */
+export class StandaloneMemoryPreferenceCapacityError extends Error {
+  readonly code = 'STANDALONE_MEMORY_PREFERENCE_CAPACITY'
+
+  constructor() {
+    super('Standalone memory preference capacity has been reached.')
+    this.name = 'StandaloneMemoryPreferenceCapacityError'
+  }
+}
+
+/**
+ * Reports that a requested durable memory preference could not be committed.
+ *
+ * Use when:
+ * - Loading or atomically replacing the preference store fails.
+ *
+ * Expects:
+ * - The affected Discord user remains fail-closed in this process.
+ *
+ * Returns:
+ * - A bounded error that omits file contents and underlying sensitive details.
+ */
+export class StandaloneMemoryPreferencePersistenceError extends Error {
+  readonly code = 'STANDALONE_MEMORY_PREFERENCE_PERSISTENCE'
+
+  constructor() {
+    super('Standalone memory preference could not be saved.')
+    this.name = 'StandaloneMemoryPreferencePersistenceError'
+  }
+}
+
+/**
+ * Reports that a direct-message memory operation has no usable Discord identity.
+ *
+ * Use when:
+ * - A DM turn omits its stable Discord user id.
+ * - Runtime input bypasses the TypeScript turn contract with an invalid id.
+ *
+ * Expects:
+ * - Callers do not derive identity from session, channel, or fallback values.
+ *
+ * Returns:
+ * - A stable bounded error without user content or persistence details.
+ */
+export class StandaloneMemoryInvalidIdentityError extends Error {
+  readonly code = 'STANDALONE_MEMORY_INVALID_IDENTITY'
+
+  constructor() {
+    super('Standalone direct-message memory requires a stable Discord user id.')
+    this.name = 'StandaloneMemoryInvalidIdentityError'
+  }
+}
+
 class StandaloneMemoryWriteRollbackError extends Error {
   readonly code = 'STANDALONE_MEMORY_WRITE_ROLLBACK_FAILED'
 
@@ -173,13 +242,48 @@ class StandaloneMemoryWriteRollbackError extends Error {
   }
 }
 
+type StandaloneMemoryStoreFailureCode
+  = | 'BLOCKED_MIGRATION'
+    | 'MALFORMED_STORE'
+    | 'OVERSIZED_STORE'
+    | 'UNREADABLE_STORE'
+
+class StandaloneMemoryStoreFailure extends Error {
+  readonly code: StandaloneMemoryStoreFailureCode
+
+  constructor(code: StandaloneMemoryStoreFailureCode) {
+    super(`Standalone memory store is unavailable (${code}).`)
+    this.code = code
+    this.name = 'StandaloneMemoryStoreFailure'
+  }
+}
+
 interface StandaloneMemoryFile {
-  version: 3
+  version: 4
   memories: StandaloneMemoryEntry[]
   preferences: StandaloneMemoryPreference[]
 }
 
-interface StandaloneMemoryPreference {
+interface StandaloneGuildMemoryPreference {
+  channelId: string
+  enabled: boolean
+  guildId: string
+  scope: 'guild'
+  sessionId: string
+  updatedAt: string
+  userId: string
+}
+
+interface StandaloneDirectMessageOptOut {
+  enabled: false
+  scope: 'dm'
+  updatedAt: string
+  userId: string
+}
+
+type StandaloneMemoryPreference = StandaloneGuildMemoryPreference | StandaloneDirectMessageOptOut
+
+interface LegacyStandaloneMemoryPreference {
   channelId: string
   enabled: boolean
   guildId?: string
@@ -191,6 +295,8 @@ interface StandaloneMemoryPreference {
 const DEFAULT_MEMORY_FILE_NAME = '.airi-discord-memory.json'
 const DEFAULT_MAX_PROMPT_MEMORIES = 8
 const DEFAULT_MAX_STORED_MEMORIES = 1000
+const DEFAULT_MAX_PREFERENCE_RECORDS = 4096
+const DEFAULT_MAX_FILE_BYTES = 1_048_576
 const DEFAULT_AUTO_CAPTURE_TTL_DAYS = 180
 const MAX_PROMPT_MEMORIES = 24
 const MAX_STORED_MEMORIES = 10_000
@@ -236,6 +342,33 @@ function normalizeBoundedInteger(value: string | undefined, defaultValue: number
     return defaultValue
 
   return Math.min(maximum, Math.max(1, Math.trunc(parsed)))
+}
+
+/**
+ * Parses a configurable positive-integer storage limit without normalization.
+ *
+ * Before:
+ * - "4096"
+ * - "1.5"
+ *
+ * After:
+ * - 4096
+ * - throws for the fractional value
+ */
+function parsePositiveIntegerLimit(value: string | undefined, defaultValue: number, name: string) {
+  if (value === undefined || value.trim() === '')
+    return defaultValue
+
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0)
+    throw new TypeError(`${name} must be a finite positive integer.`)
+
+  return parsed
+}
+
+function validatePositiveIntegerLimit(value: number, name: string) {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0)
+    throw new TypeError(`${name} must be a finite positive integer.`)
 }
 
 function normalizeOptionalText(value: string | undefined) {
@@ -317,7 +450,7 @@ function createEmptyMemoryFile(): StandaloneMemoryFile {
   return {
     memories: [],
     preferences: [],
-    version: 3,
+    version: 4,
   }
 }
 
@@ -351,7 +484,56 @@ function isMemoryEntry(value: unknown): value is StandaloneMemoryEntry {
     && (!('userId' in value) || isOptionalString(value.userId))
 }
 
-function isMemoryPreference(value: unknown): value is StandaloneMemoryPreference {
+/**
+ * Checks whether a schema-v4 memory record has the required persisted shape.
+ *
+ * Before:
+ * - `42`
+ * - `{ id: 'note', scope: 'dm' }`
+ *
+ * After:
+ * - rejected as malformed store records
+ */
+function isCurrentMemoryEntry(value: unknown): value is StandaloneMemoryEntry {
+  return isMemoryEntry(value)
+    && isCanonicalText(value.id)
+    && typeof value.accessCount === 'number'
+    && Number.isInteger(value.accessCount)
+    && value.accessCount >= 0
+    && isCanonicalTimestamp(value.createdAt)
+    && isCanonicalTimestamp(value.updatedAt)
+    && isMemorySource(value.source)
+    && isMemoryStatus(value.status)
+    && hasCanonicalMemoryContent(value)
+    && isCanonicalOptionalText(value.channelId)
+    && (value.confidence === undefined
+      || (Number.isFinite(value.confidence) && value.confidence >= 0 && value.confidence <= 1))
+    && isCanonicalOptionalText(value.displayName)
+    && isCanonicalOptionalTimestamp(value.expiresAt)
+    && isCanonicalOptionalText(value.extractionModel)
+    && (value.factKey === undefined || normalizeStandaloneMemoryFactKey(value.factKey) === value.factKey)
+    && isCanonicalOptionalText(value.guildId)
+    && isCanonicalOptionalTimestamp(value.lastUsedAt)
+    && isCanonicalOptionalText(value.sourceMessageId)
+    && isCanonicalOptionalText(value.sourceSessionId)
+    && isCanonicalOptionalTimestamp(value.supersededAt)
+    && isCanonicalOptionalText(value.supersededById)
+    && isCanonicalOptionalText(value.supersedesId)
+    && isCanonicalOptionalText(value.userId)
+    && hasValidScopeIdentifiers(value)
+    && (value.source !== 'auto-chat'
+      || (value.factKey !== undefined
+        && value.memoryClass !== undefined
+        && value.confidence !== undefined
+        && value.extractionModel !== undefined
+        && value.sourceSessionId !== undefined))
+}
+
+function isCurrentMemoryEntryArray(values: unknown[]): values is StandaloneMemoryEntry[] {
+  return values.every(isCurrentMemoryEntry)
+}
+
+function isLegacyMemoryPreference(value: unknown): value is LegacyStandaloneMemoryPreference {
   return typeof value === 'object'
     && value !== null
     && 'channelId' in value
@@ -365,6 +547,94 @@ function isMemoryPreference(value: unknown): value is StandaloneMemoryPreference
     && 'userId' in value
     && typeof value.userId === 'string'
     && (!('guildId' in value) || isOptionalString(value.guildId))
+}
+
+function isValidTimestamp(value: string) {
+  return Number.isFinite(Date.parse(value))
+}
+
+function isCanonicalText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value
+}
+
+function isCanonicalOptionalText(value: unknown): value is string | undefined {
+  return value === undefined || isCanonicalText(value)
+}
+
+function isCanonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || !isValidTimestamp(value))
+    return false
+
+  return new Date(value).toISOString() === value
+}
+
+function isCanonicalOptionalTimestamp(value: unknown): value is string | undefined {
+  return value === undefined || isCanonicalTimestamp(value)
+}
+
+function hasCanonicalMemoryContent(memory: StandaloneMemoryEntry) {
+  const content = normalizeContent(memory.content)
+  if (!content || content !== memory.content)
+    return false
+
+  const decision = memory.source === 'dashboard'
+    ? checkStandaloneDiscordOwnerMemorySafety(content)
+    : checkStandaloneDiscordSelfMemorySafety(content)
+  return decision.safe
+}
+
+/**
+ * Resolves the only valid durable identity for a direct-message turn.
+ *
+ * Before:
+ * - `undefined`
+ * - `'   '`
+ *
+ * After:
+ * - `undefined`
+ */
+function resolveDirectMessageUserId(turn: StandaloneDiscordChatTurn): string | undefined {
+  if (!turn.directMessage || typeof turn.userId !== 'string')
+    return undefined
+
+  return turn.userId.trim() === turn.userId && turn.userId.length > 0
+    ? turn.userId
+    : undefined
+}
+
+function isMemoryPreference(value: unknown): value is StandaloneMemoryPreference {
+  if (typeof value !== 'object' || value === null || !('scope' in value))
+    return false
+
+  if (value.scope === 'dm') {
+    return 'enabled' in value
+      && value.enabled === false
+      && 'updatedAt' in value
+      && isCanonicalTimestamp(value.updatedAt)
+      && 'userId' in value
+      && isCanonicalText(value.userId)
+      && !('channelId' in value)
+      && !('guildId' in value)
+      && !('sessionId' in value)
+  }
+
+  return value.scope === 'guild'
+    && 'channelId' in value
+    && isCanonicalText(value.channelId)
+    && 'enabled' in value
+    && typeof value.enabled === 'boolean'
+    && 'guildId' in value
+    && isCanonicalText(value.guildId)
+    && 'sessionId' in value
+    && isCanonicalText(value.sessionId)
+    && 'updatedAt' in value
+    && isCanonicalTimestamp(value.updatedAt)
+    && 'userId' in value
+    && isCanonicalText(value.userId)
+}
+
+function isMemoryPreferenceArray(values: unknown[]): values is StandaloneMemoryPreference[] {
+  return values.every(isMemoryPreference)
 }
 
 /**
@@ -562,7 +832,7 @@ function scoreMemoryRelevance(memory: StandaloneMemoryEntry, query: string) {
 }
 
 function matchesExactSession(
-  value: Pick<StandaloneMemoryPreference, 'channelId' | 'guildId' | 'sessionId' | 'userId'>,
+  value: StandaloneGuildMemoryPreference,
   turn: StandaloneDiscordChatTurn,
 ) {
   return value.sessionId === turn.sessionId
@@ -657,6 +927,8 @@ export function resolveStandaloneMemoryStoreConfig(
     filePath: configuredPath
       ? isAbsolute(configuredPath) ? configuredPath : resolve(baseDir, configuredPath)
       : resolve(baseDir, DEFAULT_MEMORY_FILE_NAME),
+    maxFileBytes: parsePositiveIntegerLimit(env.AIRI_DISCORD_MEMORY_MAX_FILE_BYTES, DEFAULT_MAX_FILE_BYTES, 'AIRI_DISCORD_MEMORY_MAX_FILE_BYTES'),
+    maxPreferenceRecords: parsePositiveIntegerLimit(env.AIRI_DISCORD_MEMORY_MAX_PREFERENCE_RECORDS, DEFAULT_MAX_PREFERENCE_RECORDS, 'AIRI_DISCORD_MEMORY_MAX_PREFERENCE_RECORDS'),
     maxPromptMemories: normalizeMemoryLimit(env.AIRI_DISCORD_MEMORY_MAX_PROMPT),
     maxStoredMemories: normalizeBoundedInteger(env.AIRI_DISCORD_MEMORY_MAX_STORED, DEFAULT_MAX_STORED_MEMORIES, MAX_STORED_MEMORIES),
   }
@@ -679,9 +951,15 @@ export function resolveStandaloneMemoryStoreConfig(
 export class StandaloneMemoryStore {
   private readonly config: StandaloneMemoryStoreConfig
   private readonly extractor: StandaloneMemoryExtractor | undefined
+  private readonly failClosedUserIds = new Set<string>()
   private readonly now: () => number
+  private storeFailClosed = false
+  private storeFailureCode: StandaloneMemoryStoreFailureCode | undefined
+  private readonly warnedStoreFailures = new Set<StandaloneMemoryStoreFailureCode>()
 
   constructor(config: StandaloneMemoryStoreConfig, options: StandaloneMemoryStoreOptions = {}) {
+    validatePositiveIntegerLimit(config.maxFileBytes, 'maxFileBytes')
+    validatePositiveIntegerLimit(config.maxPreferenceRecords, 'maxPreferenceRecords')
     this.config = config
     this.extractor = options.extractor
     this.now = options.now ?? Date.now
@@ -703,42 +981,191 @@ export class StandaloneMemoryStore {
     throw error
   }
 
-  private async readFile(context?: StandaloneMemoryOperationContext): Promise<StandaloneMemoryFile> {
-    try {
-      const contents = await readFile(this.config.filePath, 'utf-8')
-      await chmod(this.config.filePath, 0o600)
-      const parsed = JSON.parse(contents) as unknown
-      if (typeof parsed !== 'object' || parsed === null || !('memories' in parsed) || !Array.isArray(parsed.memories))
-        return createEmptyMemoryFile()
+  private recordStoreFailure(error: StandaloneMemoryStoreFailure): void {
+    this.storeFailClosed = true
+    this.storeFailureCode ??= error.code
+    if (this.warnedStoreFailures.has(error.code))
+      return
 
-      const fallbackTimestamp = new Date(this.now()).toISOString()
-      const normalizedMemories = parsed.memories
-        .filter(isMemoryEntry)
-        .flatMap((memory) => {
-          const normalized = normalizePersistedMemoryEntry(memory, fallbackTimestamp)
-          return normalized ? [normalized] : []
-        })
-      const persistedPreferences = 'preferences' in parsed && Array.isArray(parsed.preferences)
-        ? parsed.preferences
-        : []
-      const normalizedPreferences = persistedPreferences
-        .filter(isMemoryPreference)
-        .map(preference => ({
+    this.warnedStoreFailures.add(error.code)
+    console.warn('[discord-bot:standalone] memory store unavailable:', error.code)
+  }
+
+  private storeFailure(code: StandaloneMemoryStoreFailureCode): StandaloneMemoryStoreFailure {
+    const error = new StandaloneMemoryStoreFailure(code)
+    this.recordStoreFailure(error)
+    return error
+  }
+
+  private validatePreferenceCapacity(file: StandaloneMemoryFile): void {
+    if (file.preferences.length > this.config.maxPreferenceRecords)
+      throw new StandaloneMemoryPreferenceCapacityError()
+  }
+
+  private serializeFile(file: StandaloneMemoryFile): string {
+    this.validatePreferenceCapacity(file)
+    if (file.version !== 4 || !file.preferences.every(isMemoryPreference))
+      throw new StandaloneMemoryStoreFailure('MALFORMED_STORE')
+
+    const serialized = `${JSON.stringify(file, null, 2)}\n`
+    if (Buffer.byteLength(serialized, 'utf8') > this.config.maxFileBytes)
+      throw new StandaloneMemoryPreferenceCapacityError()
+
+    return serialized
+  }
+
+  private migrateLegacyPreferences(preferences: unknown[]): StandaloneMemoryPreference[] {
+    const directMessagePreferences = new Map<string, LegacyStandaloneMemoryPreference>()
+    const guildPreferences: StandaloneGuildMemoryPreference[] = []
+
+    for (const preference of preferences) {
+      if (!isLegacyMemoryPreference(preference)) {
+        if (
+          typeof preference === 'object'
+          && preference !== null
+          && 'enabled' in preference
+          && preference.enabled === false
+          && (!('userId' in preference) || typeof preference.userId !== 'string' || !preference.userId.trim())
+        ) {
+          throw this.storeFailure('BLOCKED_MIGRATION')
+        }
+        throw this.storeFailure('MALFORMED_STORE')
+      }
+      if (!preference.userId.trim() || !isValidTimestamp(preference.updatedAt))
+        throw this.storeFailure(preference.enabled ? 'MALFORMED_STORE' : 'BLOCKED_MIGRATION')
+
+      const guildId = normalizeOptionalText(preference.guildId)
+      if (guildId) {
+        if (!preference.channelId.trim() || !preference.sessionId.trim())
+          throw this.storeFailure('MALFORMED_STORE')
+        guildPreferences.push({
           channelId: preference.channelId,
           enabled: preference.enabled,
-          guildId: normalizeOptionalText(preference.guildId),
+          guildId,
+          scope: 'guild',
           sessionId: preference.sessionId,
           updatedAt: preference.updatedAt,
           userId: preference.userId,
-        }))
+        })
+        continue
+      }
+
+      const current = directMessagePreferences.get(preference.userId)
+      // Legacy exact-session rows can disagree for one stable user. Privacy policy
+      // requires any explicit opt-out to survive that collapse; timestamps only
+      // select the representative row when both decisions have the same state.
+      if (
+        !current
+        || (!preference.enabled && current.enabled)
+        || (preference.enabled === current.enabled && Date.parse(preference.updatedAt) > Date.parse(current.updatedAt))
+      ) {
+        directMessagePreferences.set(preference.userId, preference)
+      }
+    }
+
+    const directMessageOptOuts = [...directMessagePreferences.values()]
+      .filter(preference => !preference.enabled)
+      .map<StandaloneDirectMessageOptOut>(preference => ({
+        enabled: false,
+        scope: 'dm',
+        updatedAt: preference.updatedAt,
+        userId: preference.userId,
+      }))
+    return [...directMessageOptOuts, ...guildPreferences]
+  }
+
+  private async readFile(context?: StandaloneMemoryOperationContext): Promise<StandaloneMemoryFile> {
+    if (this.storeFailClosed)
+      throw new StandaloneMemoryStoreFailure(this.storeFailureCode ?? 'MALFORMED_STORE')
+
+    let fileSize: number
+    try {
+      fileSize = (await stat(this.config.filePath)).size
+    }
+    catch (error) {
+      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
+        return createEmptyMemoryFile()
+
+      throw this.storeFailure('UNREADABLE_STORE')
+    }
+
+    if (fileSize > this.config.maxFileBytes)
+      throw this.storeFailure('OVERSIZED_STORE')
+
+    let contents: string
+    try {
+      contents = await readFile(this.config.filePath, 'utf-8')
+    }
+    catch {
+      throw this.storeFailure('UNREADABLE_STORE')
+    }
+    if (Buffer.byteLength(contents, 'utf8') > this.config.maxFileBytes)
+      throw this.storeFailure('OVERSIZED_STORE')
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(contents) as unknown
+    }
+    catch {
+      throw this.storeFailure('MALFORMED_STORE')
+    }
+    if (
+      typeof parsed !== 'object'
+      || parsed === null
+      || !('version' in parsed)
+      || typeof parsed.version !== 'number'
+      || !('memories' in parsed)
+      || !Array.isArray(parsed.memories)
+      || !('preferences' in parsed)
+      || !Array.isArray(parsed.preferences)
+    ) {
+      throw this.storeFailure('MALFORMED_STORE')
+    }
+
+    try {
+      let normalizedMemories: StandaloneMemoryEntry[]
+      let normalizedPreferences: StandaloneMemoryPreference[]
+      if (parsed.version === 4) {
+        // Current-schema records must already satisfy every invariant enforced by
+        // legacy normalization. Reject the whole store before any record can be
+        // filtered, repaired, exposed, or written back.
+        if (!isCurrentMemoryEntryArray(parsed.memories) || !isMemoryPreferenceArray(parsed.preferences))
+          throw this.storeFailure('MALFORMED_STORE')
+
+        const fallbackTimestamp = new Date(this.now()).toISOString()
+        normalizedMemories = parsed.memories.map((memory) => {
+          const normalized = normalizePersistedMemoryEntry(memory, fallbackTimestamp)
+          if (!normalized)
+            throw this.storeFailure('MALFORMED_STORE')
+
+          return normalized
+        })
+        normalizedPreferences = parsed.preferences
+      }
+      else if (parsed.version >= 1 && parsed.version <= 3) {
+        const fallbackTimestamp = new Date(this.now()).toISOString()
+        normalizedMemories = parsed.memories
+          .filter(isMemoryEntry)
+          .flatMap((memory) => {
+            const normalized = normalizePersistedMemoryEntry(memory, fallbackTimestamp)
+            return normalized ? [normalized] : []
+          })
+        normalizedPreferences = this.migrateLegacyPreferences(parsed.preferences)
+      }
+      else {
+        throw this.storeFailure('MALFORMED_STORE')
+      }
       const file: StandaloneMemoryFile = {
         memories: normalizedMemories,
         preferences: normalizedPreferences,
-        version: 3,
+        version: 4,
       }
+      this.validatePreferenceCapacity(file)
+      const migrated = parsed.version !== 4
       if (
-        normalizedMemories.length !== parsed.memories.length
-        || normalizedPreferences.length !== persistedPreferences.length
+        migrated
+        || normalizedMemories.length !== parsed.memories.length
+        || normalizedPreferences.length !== parsed.preferences.length
       ) {
         // Imported records remain untrusted on every load. Scrub rejected cards
         // while the caller holds the file lock so a later policy change cannot
@@ -749,13 +1176,18 @@ export class StandaloneMemoryStore {
         await this.writeFile(file)
         this.throwIfOperationInactive(context)
       }
+      else {
+        await chmod(this.config.filePath, 0o600)
+      }
       return file
     }
     catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT')
-        return createEmptyMemoryFile()
+      if (error instanceof StandaloneMemoryPreferenceCapacityError)
+        throw this.storeFailure('OVERSIZED_STORE')
+      if (error instanceof StandaloneMemoryStoreFailure)
+        throw error
 
-      throw error
+      throw this.storeFailure('UNREADABLE_STORE')
     }
   }
 
@@ -780,7 +1212,8 @@ export class StandaloneMemoryStore {
     // Memory cards can contain private user facts, so both new and existing files are owner-only.
     let committed = false
     try {
-      await writeFile(temporaryPath, `${JSON.stringify(file, null, 2)}\n`, {
+      const serialized = this.serializeFile(file)
+      await writeFile(temporaryPath, serialized, {
         encoding: 'utf-8',
         mode: 0o600,
         signal: context?.abortSignal,
@@ -876,8 +1309,17 @@ export class StandaloneMemoryStore {
   }
 
   private isMemoryEnabledForTurn(file: StandaloneMemoryFile, turn: StandaloneDiscordChatTurn) {
-    const preference = file.preferences.find(value => matchesExactSession(value, turn))
-    return preference?.enabled ?? (turn.directMessage || !this.config.consentRequired)
+    if (turn.directMessage && !resolveDirectMessageUserId(turn))
+      return false
+
+    if (this.storeFailClosed || (turn.userId && this.failClosedUserIds.has(turn.userId)))
+      return false
+
+    if (turn.directMessage)
+      return !file.preferences.some(value => value.scope === 'dm' && value.userId === turn.userId)
+
+    const preference = file.preferences.find(value => value.scope === 'guild' && matchesExactSession(value, turn))
+    return preference?.enabled ?? !this.config.consentRequired
   }
 
   private removeExpiredMemories(memories: StandaloneMemoryEntry[]) {
@@ -935,12 +1377,16 @@ export class StandaloneMemoryStore {
     if (!command)
       return undefined
 
+    const directMessageUserId = resolveDirectMessageUserId(turn)
+    if (turn.directMessage && !directMessageUserId)
+      throw new StandaloneMemoryInvalidIdentityError()
+
     if (!turn.userId) {
       return command.language === 'zh'
         ? '当前消息缺少 Discord 用户 ID，无法修改记忆设置。'
         : 'This message has no Discord user id, so its memory setting cannot be changed.'
     }
-    const userId = turn.userId
+    const userId = directMessageUserId ?? turn.userId
 
     if (command.action === 'help') {
       return command.language === 'zh'
@@ -949,7 +1395,19 @@ export class StandaloneMemoryStore {
     }
 
     return withMemoryFileLock(this.config.filePath, async () => {
-      const file = await this.readFile()
+      let file: StandaloneMemoryFile
+      try {
+        file = await this.readFile()
+      }
+      catch (error) {
+        if (command.action === 'status' && error instanceof StandaloneMemoryStoreFailure) {
+          return command.language === 'zh'
+            ? '当前会话长期记忆未开启。'
+            : 'Long-term memory is disabled for this session.'
+        }
+        this.failClosedUserIds.add(userId)
+        throw new StandaloneMemoryPreferencePersistenceError()
+      }
       const currentEnabled = this.isMemoryEnabledForTurn(file, turn)
       if (command.action === 'status') {
         return command.language === 'zh'
@@ -957,21 +1415,39 @@ export class StandaloneMemoryStore {
           : `Long-term memory is ${currentEnabled ? 'enabled' : 'disabled'} for this session.`
       }
 
-      const otherPreferences = file.preferences.filter(value => !matchesExactSession(value, turn))
+      const otherPreferences = turn.directMessage
+        ? file.preferences.filter(value => value.scope !== 'dm' || value.userId !== userId)
+        : file.preferences.filter(value => value.scope !== 'guild' || !matchesExactSession(value, turn))
+      const updatedAt = new Date(this.now()).toISOString()
+      const nextPreferences: StandaloneMemoryPreference[] = turn.directMessage
+        ? command.action === 'on'
+          ? otherPreferences
+          : [{
+              enabled: false,
+              scope: 'dm',
+              updatedAt,
+              userId,
+            }, ...otherPreferences]
+        : [{
+            channelId: turn.channelId,
+            enabled: command.action === 'on',
+            guildId: turn.guildId ?? '',
+            scope: 'guild',
+            sessionId: turn.sessionId,
+            updatedAt,
+            userId,
+          }, ...otherPreferences]
       if (command.action === 'forget') {
         const nextMemories = file.memories.filter(memory => !this.memoryBelongsToExactSession(memory, turn))
-        await this.writeFile({
-          ...file,
-          memories: nextMemories,
-          preferences: [{
-            channelId: turn.channelId,
-            enabled: false,
-            guildId: turn.guildId,
-            sessionId: turn.sessionId,
-            updatedAt: new Date().toISOString(),
-            userId,
-          }, ...otherPreferences],
-        })
+        try {
+          await this.writeFile({ ...file, memories: nextMemories, preferences: nextPreferences })
+        }
+        catch (error) {
+          this.failClosedUserIds.add(userId)
+          if (error instanceof StandaloneMemoryPreferenceCapacityError)
+            throw error
+          throw new StandaloneMemoryPreferencePersistenceError()
+        }
         this.notifyMemoryDisabled(context)
         const deletedCount = file.memories.length - nextMemories.length
         return command.language === 'zh'
@@ -980,17 +1456,15 @@ export class StandaloneMemoryStore {
       }
 
       const enabled = command.action === 'on'
-      await this.writeFile({
-        ...file,
-        preferences: [{
-          channelId: turn.channelId,
-          enabled,
-          guildId: turn.guildId,
-          sessionId: turn.sessionId,
-          updatedAt: new Date().toISOString(),
-          userId,
-        }, ...otherPreferences],
-      })
+      try {
+        await this.writeFile({ ...file, preferences: nextPreferences })
+      }
+      catch (error) {
+        this.failClosedUserIds.add(userId)
+        if (error instanceof StandaloneMemoryPreferenceCapacityError)
+          throw error
+        throw new StandaloneMemoryPreferencePersistenceError()
+      }
       if (!enabled)
         this.notifyMemoryDisabled(context)
       return command.language === 'zh'
@@ -1037,10 +1511,20 @@ export class StandaloneMemoryStore {
     this.throwIfOperationInactive(context)
     if (!this.config.enabled)
       return ''
+    if (turn.directMessage && !resolveDirectMessageUserId(turn))
+      return ''
 
     return withMemoryFileLock(this.config.filePath, async () => {
       this.throwIfOperationInactive(context)
-      const file = await this.readFile(context)
+      let file: StandaloneMemoryFile
+      try {
+        file = await this.readFile(context)
+      }
+      catch (error) {
+        if (error instanceof StandaloneMemoryStoreFailure)
+          return ''
+        throw error
+      }
       this.throwIfOperationInactive(context)
       if (!this.isMemoryEnabledForTurn(file, turn))
         return ''
@@ -1126,6 +1610,8 @@ export class StandaloneMemoryStore {
     this.throwIfOperationInactive(context)
     if (!this.config.enabled || !this.config.autoCaptureEnabled || !turn.userId)
       return
+    if (turn.directMessage && !resolveDirectMessageUserId(turn))
+      return
 
     const content = normalizeContent(turn.text)
     if (!content)
@@ -1133,9 +1619,16 @@ export class StandaloneMemoryStore {
 
     const consentEnabled = await withMemoryFileLock(this.config.filePath, async () => {
       this.throwIfOperationInactive(context)
-      const file = await this.readFile(context)
-      this.throwIfOperationInactive(context)
-      return this.isMemoryEnabledForTurn(file, turn)
+      try {
+        const file = await this.readFile(context)
+        this.throwIfOperationInactive(context)
+        return this.isMemoryEnabledForTurn(file, turn)
+      }
+      catch (error) {
+        if (error instanceof StandaloneMemoryStoreFailure)
+          return false
+        throw error
+      }
     })
     this.throwIfOperationInactive(context)
     if (!consentEnabled)
@@ -1240,7 +1733,15 @@ export class StandaloneMemoryStore {
     this.throwIfOperationInactive(context)
     await withMemoryFileLock(this.config.filePath, async () => {
       this.throwIfOperationInactive(context)
-      const file = await this.readFile(context)
+      let file: StandaloneMemoryFile
+      try {
+        file = await this.readFile(context)
+      }
+      catch (error) {
+        if (error instanceof StandaloneMemoryStoreFailure)
+          return
+        throw error
+      }
       this.throwIfOperationInactive(context)
       if (!this.isMemoryEnabledForTurn(file, turn))
         return
